@@ -24,6 +24,7 @@ pub const RegexError = error{
     FailedToParseExpression,
     InvalidExpression,
     InvalidExpressionRanOutOfMemory,
+    ASTInsertionError
 };
 
 /// Opening brackets and braces.
@@ -47,6 +48,15 @@ const WHITESPACE: [4]char = .{' ', '\n', '\t', '\r'};
 /// All prinatble characters from ' ' to '~' inclusive. See [the ASCII table](https://www.asciitable.com/) for reference.
 const ALL_VISIBLE_CHARACTERS: [95]char = .{for (' '..'~') |c| c};
 
+const ASTNodeTypes = enum{
+    Expression,
+    Alternation,
+    CharacterSet,
+    Repetition,
+    Literal,
+    Group,
+};
+
 /// Creates an object capable of parsing regular expressions.
 /// 
 /// Store the Regex instance by calling `const regex = Regex();`
@@ -68,12 +78,73 @@ pub fn Regex() type {
         stack: ArrayList(char),
         /// The regular expression to test against.
         exp: string,
+        /// Abstract Syntax Tree for the stored regular expression.
+        ast: AST,
+
+        /// Structure for storing AST nodes.
+        const AST = struct {
+            /// The type of node this is.
+            nodeType: ASTNodeTypes,
+            /// The position of the node's value in the original expression.
+            pos: i64,
+            /// The value of the node, usually a slice of the original expression.
+            value: string,
+            /// The next node in the AST.
+            next: ?*AST = null,
+            /// The parent node of this node.
+            prev: ?*AST = null,
+            /// The child node of this node.
+            child: ?*AST = null,
+            /// The number of nodes that are decended from this one.
+            descendantNodeCount: i64 = 0,
+            /// Repetition data.
+            repeat: struct {
+                /// Minimum number of occurrances.
+                min: i64,
+                /// Maximum number of occrrances.
+                max: i64,
+            } = .{ .min = 1, .max = 1},
+
+            /// Insert an AST node into an existing AST.
+            pub fn insert(self: *AST, newNode: *AST) !void {
+                if (newNode.pos <= self.descendantNodeCount) {
+                    return RegexError.ASTInsertionError;
+                }
+                self.descendantNodeCount += 1;
+                if (self.child) |child| {
+                    if (child.pos + child.descendantNodeCount == newNode.pos-1) {
+                        child.insert(newNode);
+                        return;
+                    }
+                }
+                if (self.next) |next| {
+                    if (next.pos + next.descendantNodeCount == newNode.pos-1) {
+                        next.insert(newNode);
+                        return;
+                    }
+                }
+                switch (newNode.nodeType) {
+                    .Expression => {
+                        self.child = newNode;
+                    },
+                    _ => {
+                        self.next = newNode;
+                    }
+                }
+                newNode.prev = self;
+            }
+        };
 
         /// Initialise the regex engine with an `expression`.
         pub fn init(expression: string, allocator: std.mem.Allocator) !Self {
             var output: Self = Self{
                 .stack = ArrayList(char).init(allocator),
                 .exp = expression,
+                .ast = AST{
+                    .nodeType = ASTNodeTypes.Expression,
+                    .pos = 0,
+                    .value = expression,
+                },
             };
             errdefer output.deinit();
             if (!(output.validExp() catch false)) {
@@ -126,6 +197,23 @@ pub fn Regex() type {
             }
             return true;
         }
+
+        // fn generateAST(self: *Self) !void {
+        //     var i: i64 = 0;
+        //     while (i < self.exp.len) {
+        //         switch (self.exp[i]) {
+        //             '(' => {
+        //                 self.ast.insert(AST{
+        //                     .pos = i+1,
+        //                     .nodeType = ASTNodeTypes.Group,
+        //                     .value = self.exp[i],
+        //                 });
+        //             },
+        //             _ => { continue; },
+        //         }
+        //     }
+        // }
+
         const Self = @This();
     };
 }
