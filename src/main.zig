@@ -24,7 +24,8 @@ pub const RegexError = error{
     FailedToParseExpression,
     InvalidExpression,
     InvalidExpressionRanOutOfMemory,
-    ASTInsertionError
+    ASTInsertionError,
+    ASTInvalidRepetition,
 };
 
 /// Opening brackets and braces.
@@ -80,13 +81,15 @@ pub fn Regex() type {
         exp: string,
         /// Abstract Syntax Tree for the stored regular expression.
         ast: AST,
+        /// Nodes used in the AST.
+        astNodes: [128]?AST,
 
         /// Structure for storing AST nodes.
         const AST = struct {
             /// The type of node this is.
             nodeType: ASTNodeTypes,
             /// The position of the node's value in the original expression.
-            pos: i64,
+            pos: usize = 0,
             /// The value of the node, usually a slice of the original expression.
             value: string,
             /// The next node in the AST.
@@ -96,7 +99,7 @@ pub fn Regex() type {
             /// The child node of this node.
             child: ?*AST = null,
             /// The number of nodes that are decended from this one.
-            descendantNodeCount: i64 = 0,
+            descendantNodeCount: usize = 0,
             /// Repetition data.
             repeat: struct {
                 /// Minimum number of occurrances.
@@ -106,20 +109,20 @@ pub fn Regex() type {
             } = .{ .min = 1, .max = 1},
 
             /// Insert an AST node into an existing AST.
-            pub fn insert(self: *AST, newNode: *AST) !void {
-                if (newNode.pos <= self.descendantNodeCount) {
+            pub fn insert(self: *AST, newNode: *AST, pos: usize) !void {
+                if (self.pos == 0 and pos <= self.descendantNodeCount) {
                     return RegexError.ASTInsertionError;
                 }
                 self.descendantNodeCount += 1;
                 if (self.child) |child| {
-                    if (child.pos + child.descendantNodeCount == newNode.pos-1) {
-                        child.insert(newNode);
+                    if (child.pos + child.descendantNodeCount == pos-1) {
+                        child.insert(newNode, pos) catch |err| { return err; };
                         return;
                     }
                 }
                 if (self.next) |next| {
-                    if (next.pos + next.descendantNodeCount == newNode.pos-1) {
-                        next.insert(newNode);
+                    if (next.pos + next.descendantNodeCount == pos-1) {
+                        next.insert(newNode, pos) catch |err| { return err; };
                         return;
                     }
                 }
@@ -127,10 +130,11 @@ pub fn Regex() type {
                     .Expression => {
                         self.child = newNode;
                     },
-                    _ => {
+                    else => {
                         self.next = newNode;
                     }
                 }
+                newNode.pos = pos;
                 newNode.prev = self;
             }
         };
@@ -142,14 +146,15 @@ pub fn Regex() type {
                 .exp = expression,
                 .ast = AST{
                     .nodeType = ASTNodeTypes.Expression,
-                    .pos = 0,
                     .value = expression,
                 },
+                .astNodes = .{null} ** 128,
             };
             errdefer output.deinit();
-            if (!(output.validExp() catch false)) {
+            if (!(output.validExp() catch |err| { return err; })) {
                 return RegexError.InvalidExpression;
             }
+            output.generateAST() catch |err| { return err; };
             return output;
         }
 
@@ -172,7 +177,7 @@ pub fn Regex() type {
         fn validExp(self: *Self) !bool {
             for (self.exp) |ch| {
                 if (std.mem.containsAtLeast(char, &OPEN_BRACKETS, 1, &[1]char{ch})) {
-                    self.stack.append(ch) catch return std.mem.Allocator.Error.OutOfMemory;
+                    self.stack.append(ch) catch |err| { return err; };
                 }
                 else if (std.mem.containsAtLeast(char, &CLOSE_BRACKETS, 1, &[1]char{ch})) {
                     if (ch == '}') {
@@ -198,47 +203,99 @@ pub fn Regex() type {
             return true;
         }
 
-        // fn generateAST(self: *Self) !void {
-        //     var i: i64 = 0;
-        //     while (i < self.exp.len) {
-        //         switch (self.exp[i]) {
-        //             '(' => {
-        //                 self.ast.insert(AST{
-        //                     .pos = i+1,
-        //                     .nodeType = ASTNodeTypes.Group,
-        //                     .value = self.exp[i],
-        //                 });
-        //             },
-        //             _ => { continue; },
-        //         }
-        //     }
-        // }
+        /// Generate the AST for the stored expression.
+        fn generateAST(self: *Self) !void {
+            var i: usize = 0;
+            var nodes: usize = 0;
+            while (i < self.exp.len) {
+                switch (self.exp[i]) {
+                    '(' => {
+                        self.astNodes[nodes] = AST{
+                            .nodeType = ASTNodeTypes.Group,
+                            .value = "(",
+                        };
+                        self.astNodes[nodes+1] = AST{
+                            .nodeType = ASTNodeTypes.Expression,
+                            .value = "",
+                        };
+                        self.ast.insert(&self.astNodes[nodes].?, i+1) catch |err| { return err; };
+                        self.ast.insert(&self.astNodes[nodes+1].?, i+2) catch |err| { return err; };
+                        i += 1;
+                        nodes += 2;
+                    },
+                    '{' => {
+                        var x: usize = i+1;
+                        if (x >= self.exp.len) {
+                            if (self.exp[x] == '}') {
+                                return RegexError.ASTInvalidRepetition;
+                            }
+                            while (x < self.exp.len and (self.exp[x] != ',' or self.exp[x] != '}')) {
+                                x += 1;
+                            }
+                            std.log.warn("{s}\n", .{self.exp[i+1..x]});
+                            var min: i64 = std.fmt.parseInt(i64, self.exp[i+1..x], 10) catch |err| { return err; };
+                            var max = min;
+                            const comma: usize = x;
+                            if (self.exp[x] != ',') {
+                                while (x < self.exp.len and self.exp[x] != '}') {
+                                    x += 1;
+                                }
+                                max = std.fmt.parseInt(i64, self.exp[comma+1..x], 10) catch |err| { return err; };
+                            }
+                            else {
+                                max = -1;
+                            }
+                            self.astNodes[nodes] = AST{
+                                .nodeType = ASTNodeTypes.Repetition,
+                                .value = "",
+                                .repeat = .{
+                                    .min = min,
+                                    .max = max,
+                                },
+                            };
+                            self.ast.insert(&self.astNodes[nodes].?, i) catch |err| { return err; };
+                        }
+                        i += x+1;
+                        nodes += 1;
+                    },
+                    else => {
+                        self.astNodes[i] = AST{
+                            .nodeType = ASTNodeTypes.Literal,
+                            .value = self.exp[i..i+1],
+                        };
+                        self.ast.insert(&self.astNodes[i].?, i+1) catch |err| { return err; };
+                        i += 1;
+                        nodes += 1;
+                    },
+                }
+            }
+        }
 
         const Self = @This();
     };
 }
 
 test "Regex Test" {
-    var re = try Regex().init("{}[]{{()}}[]{}", std.testing.allocator);
+    var re = try Regex().init("abc{2}[](ab|c)[]{3,}", std.testing.allocator);
     defer re.deinit();
-    try std.testing.expectEqualStrings("{}[]{{()}}[]{}", re.exp);
+    try std.testing.expectEqualStrings("abc{2}[](ab|c)[]{3,}", re.exp);
 }
 test "Regex String Parseable" {
     std.log.info("Creating Regex object...", .{});
     const regex = Regex();
     std.log.info("Initialising...", .{});
-    var re = try regex.init("{}[]{{()}}[]{}", std.testing.allocator);
+    var re = try regex.init("abc{2}[](ab|c)[]{3,}", std.testing.allocator);
     defer re.deinit();
     try std.testing.expect(re.validExp() catch false);
 }
 test "Regex String Not Parseable" {
-    try std.testing.expectError(RegexError.InvalidExpression, Regex().init("{}[]{{()}}[]{}]", std.testing.allocator));
+    try std.testing.expectError(RegexError.InvalidExpression, Regex().init("abc{2}[](ab|c)[]{3,}]", std.testing.allocator));
 }
 test "Regex String with literals Parseable" {
-    var re = try Regex().init("abc{}[]{{(ab|c)}}[]{}", std.testing.allocator);
+    var re = try Regex().init("abc{2}[](ab|c)[]{3,}", std.testing.allocator);
     defer re.deinit();
     try std.testing.expectEqual(true, re.validExp() catch false);
 }
 test "Regex String with literals Not Parseable" {
-    try std.testing.expectError(RegexError.InvalidExpression, Regex().init("{}[bc*]{{(acc)}}[]{}]", std.testing.allocator));
+    try std.testing.expectError(RegexError.InvalidExpression, Regex().init("abc{2}[](ab|c)[]{3,}]", std.testing.allocator));
 }
