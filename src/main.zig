@@ -253,17 +253,56 @@ pub fn Regex() type {
                                     .max = max,
                                 },
                             };
-                            self.ast.insert(&self.astNodes[nodes].?, i) catch |err| { return err; };
+                            self.ast.insert(&self.astNodes[nodes].?, i+1) catch |err| { return err; };
                         }
                         i += x+1;
                         nodes += 1;
                     },
+                    '?' => {
+                        self.astNodes[nodes] = AST{
+                            .nodeType = ASTNodeTypes.Repetition,
+                            .value = "?",
+                            .repeat = .{
+                                .min = 0,
+                                .max = 1,
+                            },
+                        };
+                        self.ast.insert(&self.astNodes[nodes].?, i+1) catch |err| { return err; };
+                        i += 1;
+                        nodes += 1;
+                    },
+                    '*' => {
+                        self.astNodes[nodes] = AST{
+                            .nodeType = ASTNodeTypes.Repetition,
+                            .value = "*",
+                            .repeat = .{
+                                .min = 0,
+                                .max = -1,
+                            },
+                        };
+                        self.ast.insert(&self.astNodes[nodes].?, i+1) catch |err| { return err; };
+                        i += 1;
+                        nodes += 1;
+                    },
+                    '+' => {
+                        self.astNodes[nodes] = AST{
+                            .nodeType = ASTNodeTypes.Repetition,
+                            .value = "+",
+                            .repeat = .{
+                                .min = 1,
+                                .max = -1,
+                            },
+                        };
+                        self.ast.insert(&self.astNodes[nodes].?, i+1) catch |err| { return err; };
+                        i += 1;
+                        nodes += 1;
+                    },
                     else => {
-                        self.astNodes[i] = AST{
+                        self.astNodes[nodes] = AST{
                             .nodeType = ASTNodeTypes.Literal,
                             .value = self.exp[i..i+1],
                         };
-                        self.ast.insert(&self.astNodes[i].?, i+1) catch |err| { return err; };
+                        self.ast.insert(&self.astNodes[nodes].?, i+1) catch |err| { return err; };
                         i += 1;
                         nodes += 1;
                     },
@@ -298,4 +337,9 @@ test "Regex String with literals Parseable" {
 }
 test "Regex String with literals Not Parseable" {
     try std.testing.expectError(RegexError.InvalidExpression, Regex().init("abc{2}[](ab|c)[]{3,}]", std.testing.allocator));
+}
+test "Regex String with repetition markers Parseable" {
+    var re = try Regex().init("a?b*c+", std.testing.allocator);
+    defer re.deinit();
+    try std.testing.expectEqual(true, re.validExp() catch false);
 }
