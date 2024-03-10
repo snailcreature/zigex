@@ -70,17 +70,31 @@ pub fn Regex() type {
         exp: string,
 
         /// Initialise the regex engine with an `expression`.
-        pub fn init(expression: string, allocator: std.mem.Allocator) Self {
-            return Self{
+        pub fn init(expression: string, allocator: std.mem.Allocator) !Self {
+            var output: Self = Self{
                 .stack = ArrayList(char).init(allocator),
                 .exp = expression,
             };
+            errdefer output.deinit();
+            if (!(output.validExp() catch false)) {
+                return RegexError.InvalidExpression;
+            }
+            return output;
         }
 
         /// De-initialise the regex engine to avoid memory leaks.
         pub fn deinit(self: *Self) void {
             self.stack.deinit();
         }
+
+        // pub fn match(self: *Self, sample: string) !bool {
+        //     // Check that the stored expression is valid, return an error if not.
+        //     if (!self.validExp() catch return RegexError.InvalidExpressionRanOutOfMemory) {
+        //         return RegexError.InvalidExpression;
+        //     }
+            
+        //     // 
+        // }
 
         /// Checks that the given regular expression is valid, containing the correct sequence of opening
         /// and closing brackets.
@@ -117,7 +131,7 @@ pub fn Regex() type {
 }
 
 test "Regex Test" {
-    var re = Regex().init("{}[]{{()}}[]{}", std.testing.allocator);
+    var re = try Regex().init("{}[]{{()}}[]{}", std.testing.allocator);
     defer re.deinit();
     try std.testing.expectEqualStrings("{}[]{{()}}[]{}", re.exp);
 }
@@ -125,22 +139,18 @@ test "Regex String Parseable" {
     std.log.info("Creating Regex object...", .{});
     const regex = Regex();
     std.log.info("Initialising...", .{});
-    var re = regex.init("{}[]{{()}}[]{}", std.testing.allocator);
+    var re = try regex.init("{}[]{{()}}[]{}", std.testing.allocator);
     defer re.deinit();
     try std.testing.expect(re.validExp() catch false);
 }
 test "Regex String Not Parseable" {
-    var re = Regex().init("{}[]{{()}}[]{}]", std.testing.allocator);
-    defer re.deinit();
-    try std.testing.expectEqual(false, re.validExp() catch true);
+    try std.testing.expectError(RegexError.InvalidExpression, Regex().init("{}[]{{()}}[]{}]", std.testing.allocator));
 }
 test "Regex String with literals Parseable" {
-    var re = Regex().init("abc{}[]{{(ab|c)}}[]{}", std.testing.allocator);
+    var re = try Regex().init("abc{}[]{{(ab|c)}}[]{}", std.testing.allocator);
     defer re.deinit();
     try std.testing.expectEqual(true, re.validExp() catch false);
 }
 test "Regex String with literals Not Parseable" {
-    var re = Regex().init("{}[bc*]{{(acc)}}[]{}]", std.testing.allocator);
-    defer re.deinit();
-    try std.testing.expectEqual(false, re.validExp() catch true);
+    try std.testing.expectError(RegexError.InvalidExpression, Regex().init("{}[bc*]{{(acc)}}[]{}]", std.testing.allocator));
 }
