@@ -26,8 +26,26 @@ pub const RegexError = error{
     InvalidExpressionRanOutOfMemory,
 };
 
+/// Opening brackets and braces.
 const OPEN_BRACKETS: [3]char = .{'{', '[', '('};
+/// Closing brackets and braces.
 const CLOSE_BRACKETS: [3]char = .{'}', ']', ')'};
+/// All decimal digits from 0 to 9 inclusive.
+const ALL_DIGITS: [10]char = .{for ('0'..'9') |i| i};
+/// Decimal digits from 1 to 9 inclusive.
+const DIGITS_NO_0: [9]char = ALL_DIGITS[1..];
+/// All Hexadecimal digits from 0 to F inclusive.
+const HEX_DIGITS: [16]char = ALL_DIGITS ++ .{for ('A'..'F') |i| i};
+/// All lower case letters from 'a' to 'z' inclusive.
+const LOWER_CASE_LETTERS: [26]char = .{for ('a'..'z') |l| l};
+/// All upper case letters from 'A' to 'Z' inclusive.
+const UPPER_CASE_LETTERS: [26]char = .{for ('A'..'Z') |l| l};
+/// All letters from 'a' to 'z' and 'A' to 'Z' inclusive.
+const ALL_LETTERS: [52]char = LOWER_CASE_LETTERS ++ UPPER_CASE_LETTERS;
+/// Common whitespace characters: `' '`, `'\n'`, `'\t'`, and `'\r'`.
+const WHITESPACE: [4]char = .{' ', '\n', '\t', '\r'};
+/// All prinatble characters from ' ' to '~' inclusive. See [the ASCII table](https://www.asciitable.com/) for reference.
+const ALL_VISIBLE_CHARACTERS: [95]char = .{for (' '..'~') |c| c};
 
 /// Creates an object capable of parsing regular expressions.
 /// 
@@ -64,11 +82,10 @@ pub fn Regex() type {
             self.stack.deinit();
         }
 
-        /// Checks that the given regular expression is valid, containing the correct opening
+        /// Checks that the given regular expression is valid, containing the correct sequence of opening
         /// and closing brackets.
         fn validExp(self: *Self) !bool {
             for (self.exp) |ch| {
-                std.log.info("{c}", .{ch});
                 if (std.mem.containsAtLeast(char, &OPEN_BRACKETS, 1, &[1]char{ch})) {
                     self.stack.append(ch) catch return std.mem.Allocator.Error.OutOfMemory;
                 }
@@ -100,7 +117,7 @@ pub fn Regex() type {
 }
 
 test "Regex Test" {
-    const re = Regex().init("{}[]{{()}}[]{}", std.testing.allocator);
+    var re = Regex().init("{}[]{{()}}[]{}", std.testing.allocator);
     defer re.deinit();
     try std.testing.expectEqualStrings("{}[]{{()}}[]{}", re.exp);
 }
@@ -120,7 +137,7 @@ test "Regex String Not Parseable" {
 test "Regex String with literals Parseable" {
     var re = Regex().init("abc{}[]{{(ab|c)}}[]{}", std.testing.allocator);
     defer re.deinit();
-    try std.testing.expectEqual(false, re.validExp() catch true);
+    try std.testing.expectEqual(true, re.validExp() catch false);
 }
 test "Regex String with literals Not Parseable" {
     var re = Regex().init("{}[bc*]{{(acc)}}[]{}]", std.testing.allocator);
