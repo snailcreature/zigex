@@ -9,3 +9,8 @@ const regex = Regex();
 var re = regex.init("[ab|c]{1,2}(a|b|c)+", std.testing.allocator);
 defer re.deinit();
 ```
+
+- [X] Expression storage and validation (bracket alignment) (COMPLETED: 09/03/2024)
+- [ ] Expression Parser (WIP)
+- [ ] Expression Compiler
+- [ ] Expression Matcher
