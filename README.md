@@ -6,7 +6,7 @@ Import the `Regex` function into your project and set up a regular expression ma
 
 ```zig
 const regex = Regex();
-var re = regex.init("[ab|c]{1,2}(a|b|c)+", std.testing.allocator);
+var re = regex.init("(ab|c){1,2}(a|b|c)+", std.testing.allocator);
 defer re.deinit();
 ```
 
