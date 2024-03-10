@@ -56,6 +56,7 @@ const ASTNodeTypes = enum{
     Repetition,
     Literal,
     Group,
+    GroupClose,
 };
 
 /// Creates an object capable of parsing regular expressions.
@@ -114,15 +115,20 @@ pub fn Regex() type {
                     return RegexError.ASTInsertionError;
                 }
                 self.descendantNodeCount += 1;
-                if (self.child) |child| {
-                    if (child.pos + child.descendantNodeCount == pos-1) {
-                        child.insert(newNode, pos) catch |err| { return err; };
-                        return;
-                    }
-                }
                 if (self.next) |next| {
                     if (next.pos + next.descendantNodeCount == pos-1) {
                         next.insert(newNode, pos) catch |err| { return err; };
+                        return;
+                    }
+                }
+                if (self.nodeType == ASTNodeTypes.Group and newNode.nodeType == ASTNodeTypes.GroupClose) {
+                    self.next = newNode;
+                    newNode.prev = self;
+                    return;
+                }
+                if (self.child) |child| {
+                    if (child.pos + child.descendantNodeCount == pos-1) {
+                        child.insert(newNode, pos) catch |err| { return err; };
                         return;
                     }
                 }
@@ -218,10 +224,19 @@ pub fn Regex() type {
                             .nodeType = ASTNodeTypes.Expression,
                             .value = "",
                         };
-                        self.ast.insert(&self.astNodes[nodes].?, i+1) catch |err| { return err; };
-                        self.ast.insert(&self.astNodes[nodes+1].?, i+2) catch |err| { return err; };
+                        self.ast.insert(&self.astNodes[nodes].?, nodes+1) catch |err| { return err; };
+                        self.ast.insert(&self.astNodes[nodes+1].?, nodes+2) catch |err| { return err; };
                         i += 1;
                         nodes += 2;
+                    },
+                    ')' => {
+                        self.astNodes[nodes] = AST{
+                            .nodeType = ASTNodeTypes.GroupClose,
+                            .value = "",
+                        };
+                        self.ast.insert(&self.astNodes[nodes].?, nodes+1) catch |err| { return err; };
+                        i += 1;
+                        nodes += 1;
                     },
                     '{' => {
                         var x: usize = i+1;
@@ -267,7 +282,7 @@ pub fn Regex() type {
                                 .max = 1,
                             },
                         };
-                        self.ast.insert(&self.astNodes[nodes].?, i+1) catch |err| { return err; };
+                        self.ast.insert(&self.astNodes[nodes].?, nodes+1) catch |err| { return err; };
                         i += 1;
                         nodes += 1;
                     },
@@ -280,7 +295,7 @@ pub fn Regex() type {
                                 .max = -1,
                             },
                         };
-                        self.ast.insert(&self.astNodes[nodes].?, i+1) catch |err| { return err; };
+                        self.ast.insert(&self.astNodes[nodes].?, nodes+1) catch |err| { return err; };
                         i += 1;
                         nodes += 1;
                     },
@@ -293,7 +308,7 @@ pub fn Regex() type {
                                 .max = -1,
                             },
                         };
-                        self.ast.insert(&self.astNodes[nodes].?, i+1) catch |err| { return err; };
+                        self.ast.insert(&self.astNodes[nodes].?, nodes+1) catch |err| { return err; };
                         i += 1;
                         nodes += 1;
                     },
@@ -302,7 +317,7 @@ pub fn Regex() type {
                             .nodeType = ASTNodeTypes.Literal,
                             .value = self.exp[i..i+1],
                         };
-                        self.ast.insert(&self.astNodes[nodes].?, i+1) catch |err| { return err; };
+                        self.ast.insert(&self.astNodes[nodes].?, nodes+1) catch |err| { return err; };
                         i += 1;
                         nodes += 1;
                     },
