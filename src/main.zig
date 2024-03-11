@@ -27,6 +27,8 @@ pub const RegexError = error{
     InvalidExpressionRanOutOfMemory,
     ASTInsertionError,
     ASTInvalidRepetition,
+    FSAFirstNodeFailedToBeCreated,
+    FSAUnknownASTNodeType,
 };
 
 /// Opening brackets and braces.
@@ -52,10 +54,9 @@ const ALL_VISIBLE_CHARACTERS: [95]char = valueRange(' ', '~').*;
 /// All punctuation characters.
 const PUNCT: [32]char = valueRange('!', '/').* ++ valueRange(':', '@').* ++ valueRange('[', '`').* ++ valueRange('{', '~').*;
 
-const ASTNodeTypes = enum{
+pub const ASTNodeTypes = enum{
     Expression,
     Alternation,
-    CharacterSet,
     Repetition,
     Literal,
     Group,
@@ -89,7 +90,9 @@ pub fn Regex() type {
         /// Nodes used in the AST.
         astNodes: [128]?AST,
 
-        /// Structure for storing AST nodes.
+        fsa: ?FSA() = null,
+
+        /// Structure for storing Abstract Syntax Tree nodes.
         const AST = struct {
             /// The type of node this is.
             nodeType: ASTNodeTypes,
@@ -195,8 +198,18 @@ pub fn Regex() type {
                         .option1 = self.prev.?,
                         .option2 = self.next.?,
                     };
+                    const tmpPrev = self.prev;
+                    const tmpNext = self.next;
                     self.prev = self.prev.?.prev;
                     self.next = self.next.?.next;
+                    if (tmpPrev) |prev| {
+                        prev.next = null;
+                        prev.prev = null;
+                    }
+                    if (tmpNext) |next| {
+                        next.next = null;
+                        next.prev = null;
+                    }
                 }
             }
         };
@@ -218,12 +231,19 @@ pub fn Regex() type {
             }
             output.generateAST() catch |err| { return err; };
             output.ast.cleanUp();
+
+            output.fsa = FSA().init(&output.ast) catch |err| { return err; };
+            errdefer output.fsa.?.deinit();
+
             return output;
         }
 
         /// De-initialise the regex engine to avoid memory leaks.
         pub fn deinit(self: *Self) void {
             self.stack.deinit();
+            if (self.fsa != null) {
+                self.fsa.?.deinit();
+            }
         }
 
         /// Checks that the given regular expression is valid, containing the correct sequence of opening
@@ -412,6 +432,197 @@ pub fn Regex() type {
         const Self = @This();
     };
 }
+
+const FSANodeTypes = enum{
+    Entry,
+    State,
+    Terminal,
+};
+
+/// Transition identifier for any character other than a specified one.
+const epsilon: char = 0;
+/// Transition identifer for moving forward through the given string
+/// without consuming a character.
+const technicalMove: char = 127;
+
+/// Finite State Automaton for compiling and matching regular expressions.
+pub fn FSA() type {
+    return struct {
+        /// Entry point for the FSA.
+        entryNode: ?*Node = null,
+        /// The main terminal Node.
+        mainTerminalNode: ?*Node = null,
+        /// The current Node being evaluated.
+        currentNode: ?*Node = null,
+        /// The AST to work through.
+        ast: *Regex().AST,
+        /// Memory for Nodes.
+        nodes: [256]?Node = .{ .{ .nodeType = FSANodeTypes.Entry, } } ++ .{null} ** 254 ++ .{ .{ .nodeType = FSANodeTypes.Terminal, } },
+        /// Number of nodes currently stored.
+        nodeCount: usize = 1,
+
+        /// A state in the FSA.
+        const Node = struct {
+            nodeType: FSANodeTypes,
+            transitions: [256]?*Node = .{null} ** 256,
+        };
+
+        pub fn init(ast: *Regex().AST) !Self {
+            var output = Self{
+                .ast = ast,
+            };
+            errdefer output.deinit();
+            if (output.nodes[0] == null) {
+                return RegexError.FSAFirstNodeFailedToBeCreated;
+            }
+            output.entryNode = &output.nodes[0].?;
+            output.mainTerminalNode = &output.nodes[255].?;
+            output.currentNode = output.entryNode;
+
+            output.generateFSA(output.ast, output.entryNode.?, output.mainTerminalNode.?) catch |err| { return err; };
+            return output;
+        }
+
+        pub fn deinit(self: *Self) void {
+            defer _ = self;
+        }
+
+        /// Generate the FSA structure recursively from provided AST.
+        /// 
+        /// DEVNOTE: When reaching group or alternation, redefine entry and terminal node
+        /// to current and next node, rather than previous parameters.
+        fn generateFSA(self: *Self, astNode: *Regex().AST, entryNode: *Node, terminalNode: *Node) !void {
+            if (astNode.child == null and astNode.next == null) {
+                self.currentNode.?.transitions[epsilon] = terminalNode;
+                self.currentNode = terminalNode;
+                return;
+            }
+            switch (astNode.nodeType) {
+                .Expression => {
+                    self.nodes[self.nodeCount] = .{
+                        .nodeType = FSANodeTypes.State,
+                    };
+                    self.currentNode.?.transitions[technicalMove] = &self.nodes[self.nodeCount].?;
+                    self.currentNode = &self.nodes[self.nodeCount].?;
+                    self.nodeCount += 1;
+                    if (astNode.next) |astNext| {
+                        self.generateFSA(astNext, entryNode, terminalNode) catch |err| { return err; };
+                    }
+                },
+                .Group => {
+                    const newEntry: Node = .{
+                        .nodeType = FSANodeTypes.State,
+                    };
+                    const newTerminal: Node = .{
+                        .nodeType = FSANodeTypes.State,
+                    };
+                    self.nodes[self.nodeCount] = newEntry;
+                    const newEntryPos = self.nodeCount;
+                    self.nodes[self.nodeCount+1] = newTerminal;
+                    const newTerminalPos = self.nodeCount + 1;
+                    self.currentNode.?.transitions[technicalMove] = &self.nodes[self.nodeCount].?;
+                    
+                    // Repeats
+                    if (astNode.repeat.min == 0) {
+                        self.nodes[self.nodeCount].?.transitions[epsilon] = &self.nodes[self.nodeCount+1].?;
+                    }
+                    if (astNode.repeat.max == -1) {
+                        self.nodes[self.nodeCount+1].?.transitions[epsilon] = &self.nodes[self.nodeCount].?;
+                    }
+                    
+                    self.currentNode = &self.nodes[self.nodeCount].?;
+                    self.nodeCount += 2;
+                    if (astNode.child) |child| {
+                        self.generateFSA(child, &self.nodes[newEntryPos].?, &self.nodes[newTerminalPos].?) catch |err| { return err; };
+                    }
+                    self.nodes[self.nodeCount] = .{
+                        .nodeType = FSANodeTypes.State,
+                    };
+                    self.nodes[newTerminalPos].?.transitions[technicalMove] = &self.nodes[self.nodeCount].?;
+                    self.currentNode = &self.nodes[self.nodeCount].?;
+                    self.nodeCount += 1;
+                    if (astNode.next) |next| {
+                        self.generateFSA(next, entryNode, terminalNode) catch |err| { return err; };
+                    }
+                },
+                .Alternation => {
+                    self.nodes[self.nodeCount] = .{
+                        .nodeType = FSANodeTypes.State,
+                    };
+                    const pathA = &self.nodes[self.nodeCount].?;
+
+                    self.nodes[self.nodeCount+1] = .{
+                        .nodeType = FSANodeTypes.State,
+                    };
+                    const pathB = &self.nodes[self.nodeCount+1].?;
+
+                    self.nodes[self.nodeCount+2] = .{
+                        .nodeType = FSANodeTypes.State,
+                    };
+                    const newTerminal = &self.nodes[self.nodeCount+2].?;
+
+                    self.nodeCount += 3;
+                    if (astNode.extraInfo.option1) |optionA| {
+                        self.currentNode = pathA;
+                        self.generateFSA(optionA, pathA, newTerminal) catch |err| { return err; };
+                    }
+                    if (astNode.extraInfo.option2) |optionB| {
+                        self.currentNode = pathB;
+                        self.generateFSA(optionB, pathB, newTerminal) catch |err| { return err; };
+                    }
+                },
+                .OneOfRange => {
+                    self.nodes[self.nodeCount] = .{
+                        .nodeType = FSANodeTypes.State,  
+                    };
+                    for (astNode.value) |ch| {
+                        self.currentNode.?.transitions[ch] = &self.nodes[self.nodeCount].?;
+                    }
+
+                    // Repeats
+                    if (astNode.repeat.min == 0) {
+                        self.currentNode.?.transitions[epsilon] = &self.nodes[self.nodeCount].?;
+                    }
+                    if (astNode.repeat.max == -1) {
+                        self.nodes[self.nodeCount].?.transitions[epsilon] = self.currentNode.?;
+                    }
+
+                    self.currentNode = &self.nodes[self.nodeCount].?;
+                    self.nodeCount += 1;
+                    if (astNode.next) |next| {
+                        self.generateFSA(next, entryNode, terminalNode) catch |err| { return err; };
+                    }
+                },
+                .Literal => {
+                    self.nodes[self.nodeCount] = .{
+                        .nodeType = FSANodeTypes.State,
+                    };
+                    self.currentNode.?.transitions[astNode.value[0]] = &self.nodes[self.nodeCount].?;
+
+                    // Repeats
+                    if (astNode.repeat.min == 0) {
+                        self.currentNode.?.transitions[epsilon] = &self.nodes[self.nodeCount].?;
+                    }
+                    if (astNode.repeat.max == -1) {
+                        self.nodes[self.nodeCount].?.transitions[epsilon] = self.currentNode.?;
+                    }
+
+                    self.currentNode = &self.nodes[self.nodeCount].?;
+                    self.nodeCount += 1;
+                    if (astNode.next) |next| {
+                        self.generateFSA(next, entryNode, terminalNode) catch |err| { return err; };
+                    }
+                },
+                else => {
+                    return RegexError.FSAUnknownASTNodeType;
+                }
+            }
+        }
+        const Self = @This();
+    };
+
+}
+
 
 test "Regex Test" {
     var re = try Regex().init("abc{2}[abc](ab|c)[de]{3,}", std.testing.allocator);
