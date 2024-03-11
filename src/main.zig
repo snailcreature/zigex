@@ -620,7 +620,6 @@ pub fn FSA() type {
         }
         const Self = @This();
     };
-
 }
 
 
