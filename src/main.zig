@@ -111,7 +111,11 @@ pub fn Regex() type {
                 min: i64,
                 /// Maximum number of occrrances.
                 max: i64,
-            } = .{ .min = 1, .max = 1},
+            } = .{ .min = 1, .max = 1 },
+            extraInfo: struct {
+                option1: ?*AST,
+                option2: ?*AST,
+            } = .{ .option1 = null, .option2 = null },
 
             /// Insert an AST node into an existing AST.
             pub fn insert(self: *AST, newNode: *AST, pos: usize) !void {
@@ -147,6 +151,54 @@ pub fn Regex() type {
                 newNode.pos = pos;
                 newNode.prev = self;
             }
+            
+            /// Clean up the AST into its simplest form ready for compilation
+            pub fn cleanUp(self: *AST) void {
+                // Remove group closures and repetition markers
+                switch (self.nodeType) {
+                    .GroupClose => {
+                        if (self.prev) |parent| {
+                            parent.next = self.next;
+                        }
+                        if (self.next) |next| {
+                            next.prev = self.prev;
+                        }
+                    },
+                    .Repetition => {
+                        if (self.prev) |parent| {
+                            parent.repeat = self.repeat;
+                            parent.next = self.next;
+                        }
+                        if (self.next) |next| {
+                            next.prev = self.prev;
+                        }
+                    },
+                    else => {},
+                }
+                // Clean up children
+                if (self.child) |child| {
+                    child.cleanUp();
+                }
+                // Clean up next sibling
+                if (self.next) |sibling| {
+                    sibling.cleanUp();
+                }
+                // Resolve alternations
+                if (self.nodeType == ASTNodeTypes.Alternation) {
+                    if (self.prev.?.prev) |ancestor| {
+                        ancestor.next = self;
+                    }
+                    if (self.next.?.next) |descendant| {
+                        descendant.prev = self;
+                    }
+                    self.extraInfo = .{
+                        .option1 = self.prev.?,
+                        .option2 = self.next.?,
+                    };
+                    self.prev = self.prev.?.prev;
+                    self.next = self.next.?.next;
+                }
+            }
         };
 
         /// Initialise the regex engine with an `expression`.
@@ -165,6 +217,7 @@ pub fn Regex() type {
                 return RegexError.InvalidExpression;
             }
             output.generateAST() catch |err| { return err; };
+            output.ast.cleanUp();
             return output;
         }
 
