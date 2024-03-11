@@ -329,6 +329,20 @@ pub fn Regex() type {
                         nodes += 1;
                         continue;
                     },
+                    '[' => {
+                        var x = i+1;
+                        while (self.exp[x] != ']') {
+                            x+=1;
+                        }
+                        self.astNodes[nodes] = AST{
+                            .nodeType = ASTNodeTypes.OneOfRange,
+                            .value = self.exp[i+1..x],
+                        };
+                        self.ast.insert(&self.astNodes[nodes].?, nodes+1) catch |err| { return err; };
+                        i = x+1;
+                        nodes += 1;
+                        continue;
+                    },
                     else => {
                         self.astNodes[nodes] = AST{
                             .nodeType = ASTNodeTypes.Literal,
@@ -347,28 +361,28 @@ pub fn Regex() type {
 }
 
 test "Regex Test" {
-    var re = try Regex().init("abc{2}[](ab|c)[]{3,}", std.testing.allocator);
+    var re = try Regex().init("abc{2}[abc](ab|c)[de]{3,}", std.testing.allocator);
     defer re.deinit();
-    try std.testing.expectEqualStrings("abc{2}[](ab|c)[]{3,}", re.exp);
+    try std.testing.expectEqualStrings("abc{2}[abc](ab|c)[de]{3,}", re.exp);
 }
 test "Regex String Parseable" {
     std.log.info("Creating Regex object...", .{});
     const regex = Regex();
     std.log.info("Initialising...", .{});
-    var re = try regex.init("abc{2}[](ab|c)[]{3,}", std.testing.allocator);
+    var re = try regex.init("abc{2}[abc](ab|c)[de]{3,}", std.testing.allocator);
     defer re.deinit();
     try std.testing.expect(re.validExp() catch false);
 }
 test "Regex String Not Parseable" {
-    try std.testing.expectError(RegexError.InvalidExpression, Regex().init("abc{2}[](ab|c)[]{3,}]", std.testing.allocator));
+    try std.testing.expectError(RegexError.InvalidExpression, Regex().init("abc{2}[abc](ab|c)[de]{3,}]", std.testing.allocator));
 }
 test "Regex String with literals Parseable" {
-    var re = try Regex().init("abc{2}[](ab|c)[]{3,}", std.testing.allocator);
+    var re = try Regex().init("abc{2}[abc](ab|c)[de]{3,}", std.testing.allocator);
     defer re.deinit();
     try std.testing.expectEqual(true, re.validExp() catch false);
 }
 test "Regex String with literals Not Parseable" {
-    try std.testing.expectError(RegexError.InvalidExpression, Regex().init("abc{2}[](ab|c)[]{3,}]", std.testing.allocator));
+    try std.testing.expectError(RegexError.InvalidExpression, Regex().init("abc{2}[abc](ab|c)[de]{3,}]", std.testing.allocator));
 }
 test "Regex String with repetition markers Parseable" {
     var re = try Regex().init("a?b*c+", std.testing.allocator);
