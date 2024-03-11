@@ -49,6 +49,8 @@ const ALL_LETTERS: [52]char = LOWER_CASE_LETTERS ++ UPPER_CASE_LETTERS;
 const WHITESPACE: [4]char = .{' ', '\n', '\t', '\r'};
 /// All prinatble characters from ' ' to '~' inclusive. See [the ASCII table](https://www.asciitable.com/) for reference.
 const ALL_VISIBLE_CHARACTERS: [95]char = valueRange(' ', '~').*;
+/// All punctuation characters.
+const PUNCT: [32]char = valueRange('!', '/').* ++ valueRange(':', '@').* ++ valueRange('[', '`').* ++ valueRange('{', '~').*;
 
 const ASTNodeTypes = enum{
     Expression,
@@ -58,6 +60,7 @@ const ASTNodeTypes = enum{
     Literal,
     Group,
     GroupClose,
+    OneOfRange,
 };
 
 /// Creates an object capable of parsing regular expressions.
@@ -304,6 +307,27 @@ pub fn Regex() type {
                             .value = "|",
                         };
                         self.ast.insert(&self.astNodes[nodes].?, nodes+1) catch |err| { return err; };
+                    },
+                    '\\' => {
+                        const val: string = switch (self.exp[i+1]) {
+                            's' => &WHITESPACE,
+                            'd' => &ALL_DIGITS,
+                            'h' => &HEX_DIGITS,
+                            'c' => &LOWER_CASE_LETTERS,
+                            'C' => &UPPER_CASE_LETTERS,
+                            'l' => &ALL_LETTERS,
+                            'p' => &PUNCT,
+                            'a' => &ALL_VISIBLE_CHARACTERS,
+                            else => self.exp[i+1..i+2],
+                        };
+                        self.astNodes[nodes] = AST{
+                            .nodeType = ASTNodeTypes.OneOfRange,
+                            .value = val,
+                        };
+                        self.ast.insert(&self.astNodes[nodes].?, nodes+1) catch |err| { return err; };
+                        i += 2;
+                        nodes += 1;
+                        continue;
                     },
                     else => {
                         self.astNodes[nodes] = AST{
