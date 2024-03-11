@@ -9,6 +9,7 @@ const regex = Regex();
 var re = regex.init("(ab|c){1,2}(a|b|c)+", std.testing.allocator);
 defer re.deinit();
 ```
+> `"(ab|c){1,2}(a|b|c)+"` compiles as `(a and (b or c)) 1 or 2 times then ((a or b) or c) 1 or more times`.
 
 - [X] Expression storage and validation (bracket alignment) (COMPLETED: 09/03/2024)
 - [ ] Expression Parser (WIP)

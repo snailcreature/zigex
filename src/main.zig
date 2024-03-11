@@ -17,6 +17,7 @@ const ArrayList = std.ArrayList;
 const util = @import("./util.zig");
 const char = util.char;
 const string = util.string;
+const valueRange = util.valueRange;
 
 /// Errors related to Regex
 pub const RegexError = error{
@@ -33,21 +34,21 @@ const OPEN_BRACKETS: [3]char = .{'{', '[', '('};
 /// Closing brackets and braces.
 const CLOSE_BRACKETS: [3]char = .{'}', ']', ')'};
 /// All decimal digits from 0 to 9 inclusive.
-const ALL_DIGITS: [10]char = .{for ('0'..'9') |i| i};
+const ALL_DIGITS: [10]char = valueRange('0', '9').*;
 /// Decimal digits from 1 to 9 inclusive.
 const DIGITS_NO_0: [9]char = ALL_DIGITS[1..];
 /// All Hexadecimal digits from 0 to F inclusive.
-const HEX_DIGITS: [16]char = ALL_DIGITS ++ .{for ('A'..'F') |i| i};
+const HEX_DIGITS: [16]char = ALL_DIGITS ++ valueRange('A', 'F').*;
 /// All lower case letters from 'a' to 'z' inclusive.
-const LOWER_CASE_LETTERS: [26]char = .{for ('a'..'z') |l| l};
+const LOWER_CASE_LETTERS: [26]char = valueRange('a', 'z').*;
 /// All upper case letters from 'A' to 'Z' inclusive.
-const UPPER_CASE_LETTERS: [26]char = .{for ('A'..'Z') |l| l};
+const UPPER_CASE_LETTERS: [26]char = valueRange('A', 'Z').*;
 /// All letters from 'a' to 'z' and 'A' to 'Z' inclusive.
 const ALL_LETTERS: [52]char = LOWER_CASE_LETTERS ++ UPPER_CASE_LETTERS;
 /// Common whitespace characters: `' '`, `'\n'`, `'\t'`, and `'\r'`.
 const WHITESPACE: [4]char = .{' ', '\n', '\t', '\r'};
 /// All prinatble characters from ' ' to '~' inclusive. See [the ASCII table](https://www.asciitable.com/) for reference.
-const ALL_VISIBLE_CHARACTERS: [95]char = .{for (' '..'~') |c| c};
+const ALL_VISIBLE_CHARACTERS: [95]char = valueRange(' ', '~').*;
 
 const ASTNodeTypes = enum{
     Expression,
@@ -169,15 +170,6 @@ pub fn Regex() type {
             self.stack.deinit();
         }
 
-        // pub fn match(self: *Self, sample: string) !bool {
-        //     // Check that the stored expression is valid, return an error if not.
-        //     if (!self.validExp() catch return RegexError.InvalidExpressionRanOutOfMemory) {
-        //         return RegexError.InvalidExpression;
-        //     }
-            
-        //     // 
-        // }
-
         /// Checks that the given regular expression is valid, containing the correct sequence of opening
         /// and closing brackets.
         fn validExp(self: *Self) !bool {
@@ -228,6 +220,7 @@ pub fn Regex() type {
                         self.ast.insert(&self.astNodes[nodes+1].?, nodes+2) catch |err| { return err; };
                         i += 1;
                         nodes += 2;
+                        continue;
                     },
                     ')' => {
                         self.astNodes[nodes] = AST{
@@ -235,8 +228,6 @@ pub fn Regex() type {
                             .value = "",
                         };
                         self.ast.insert(&self.astNodes[nodes].?, nodes+1) catch |err| { return err; };
-                        i += 1;
-                        nodes += 1;
                     },
                     '{' => {
                         var x: usize = i+1;
@@ -272,6 +263,7 @@ pub fn Regex() type {
                         }
                         i += x+1;
                         nodes += 1;
+                        continue;
                     },
                     '?' => {
                         self.astNodes[nodes] = AST{
@@ -283,8 +275,6 @@ pub fn Regex() type {
                             },
                         };
                         self.ast.insert(&self.astNodes[nodes].?, nodes+1) catch |err| { return err; };
-                        i += 1;
-                        nodes += 1;
                     },
                     '*' => {
                         self.astNodes[nodes] = AST{
@@ -296,8 +286,6 @@ pub fn Regex() type {
                             },
                         };
                         self.ast.insert(&self.astNodes[nodes].?, nodes+1) catch |err| { return err; };
-                        i += 1;
-                        nodes += 1;
                     },
                     '+' => {
                         self.astNodes[nodes] = AST{
@@ -309,8 +297,6 @@ pub fn Regex() type {
                             },
                         };
                         self.ast.insert(&self.astNodes[nodes].?, nodes+1) catch |err| { return err; };
-                        i += 1;
-                        nodes += 1;
                     },
                     '|' => {
                         self.astNodes[nodes] = AST{
@@ -318,8 +304,6 @@ pub fn Regex() type {
                             .value = "|",
                         };
                         self.ast.insert(&self.astNodes[nodes].?, nodes+1) catch |err| { return err; };
-                        i += 1;
-                        nodes += 1;
                     },
                     else => {
                         self.astNodes[nodes] = AST{
@@ -327,10 +311,10 @@ pub fn Regex() type {
                             .value = self.exp[i..i+1],
                         };
                         self.ast.insert(&self.astNodes[nodes].?, nodes+1) catch |err| { return err; };
-                        i += 1;
-                        nodes += 1;
                     },
                 }
+                i += 1;
+                nodes += 1;
             }
         }
 
