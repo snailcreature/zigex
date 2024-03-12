@@ -480,11 +480,32 @@ pub fn FSA() type {
             output.currentNode = output.entryNode;
 
             output.generateFSA(output.ast, output.entryNode.?, output.mainTerminalNode.?) catch |err| { return err; };
+            if (output.entryNode) |entry| {
+                output.currentNode = entry;
+            }
             return output;
         }
 
         pub fn deinit(self: *Self) void {
             defer _ = self;
+        }
+
+        /// Takes in a string and attempts to match it to the Regular Expression.
+        pub fn match(self: *Self, input: string) bool {
+            defer {
+                if (self.entryNode) |entry| {
+                    self.currentNode = entry;
+                }
+            }
+            _ = input;
+            return self.currentNode.?.nodeType == FSANodeTypes.Terminal;
+        }
+
+        /// Takes a string as input and returns the first substring that matches or `null` if none match.
+        pub fn matchFirst(self: *Self, input: string) ?string {
+            _ = self;
+            _ = input;
+            return null;
         }
 
         /// Generate the FSA structure recursively from provided AST.
@@ -617,6 +638,12 @@ pub fn FSA() type {
                     return RegexError.FSAUnknownASTNodeType;
                 }
             }
+        }
+
+        fn traverse(self: *Self, input: string) ?string {
+            _ = self;
+            _ = input;
+            return null;
         }
         const Self = @This();
     };
