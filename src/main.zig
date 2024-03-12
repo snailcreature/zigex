@@ -246,6 +246,10 @@ pub fn Regex() type {
             }
         }
 
+        pub fn match(self: *Self, input: string) bool {
+            return self.fsa.?.match(input) catch false;
+        }
+
         /// Checks that the given regular expression is valid, containing the correct sequence of opening
         /// and closing brackets.
         fn validExp(self: *Self) !bool {
@@ -491,13 +495,13 @@ pub fn FSA() type {
         }
 
         /// Takes in a string and attempts to match it to the Regular Expression.
-        pub fn match(self: *Self, input: string) bool {
+        pub fn match(self: *Self, input: string) !bool {
             defer {
                 if (self.entryNode) |entry| {
                     self.currentNode = entry;
                 }
             }
-            _ = input;
+            _ = self.traverse(input) catch |err| { return err; };
             return self.currentNode.?.nodeType == FSANodeTypes.Terminal;
         }
 
@@ -640,9 +644,53 @@ pub fn FSA() type {
             }
         }
 
-        fn traverse(self: *Self, input: string) ?string {
-            _ = self;
-            _ = input;
+        /// Tranverse the FSA, attempting transitions based on the first character of the input string.
+        fn traverse(self: *Self, input: string) !?string {
+            // If we've reached the terminal, there's a match.
+            if (self.currentNode.?.nodeType == FSANodeTypes.Terminal) {
+                return "";
+            }
+            // If we've exhausted the input string, return null, triggering an attempted back track.
+            if (input.len <= 0) {
+                return null;
+            }
+
+            const currentNode = self.currentNode.?;
+            // Attempt transition based on the first character.
+            var transistion = self.currentNode.?.transitions[input[0]];
+            if (transistion) |trans| {
+                self.currentNode = trans;
+                const result = self.traverse(input[1..]) catch |err| { return err; };
+                // If exploring that path succeeds, return the result.
+                if (result) |res| {
+                    var buff: [128]u8 = .{0} ** 128;
+                    return std.fmt.bufPrint(&buff, "{c}{s}", .{input[0], res}) catch |err| { return err; };
+                    // return input[0..1] ++ res;
+                }
+            }
+            // Otherwise, backtrack and attempt the epsilon path.
+            self.currentNode = currentNode;
+            transistion = self.currentNode.?.transitions[epsilon];
+            if (transistion) |trans| {
+                self.currentNode = trans;
+                const result = self.traverse(input) catch |err| { return err; };
+                if (result) |res| {
+                    return res;
+                }
+            }
+
+            // If epsilon leads nowhere, try a technical move
+            self.currentNode = currentNode;
+            transistion = self.currentNode.?.transitions[technicalMove];
+            if (transistion) |trans| {
+                self.currentNode = trans;
+                const result = self.traverse(input) catch |err| { return err; };
+                if (result) |res| {
+                    return res;
+                }
+            }
+
+            // If all paths fail, return null.
             return null;
         }
         const Self = @This();
@@ -681,4 +729,9 @@ test "Regex String with repetition markers Parseable" {
 test "Regex String with alternation Parseable" {
     var re = try Regex().init("a|(bc)|d", std.testing.allocator);
     defer re.deinit();
+}
+test "Attempt match on \"bc\"" {
+    var re = try Regex().init("a|(bc)|d", std.testing.allocator);
+    defer re.deinit();
+    try std.testing.expect(re.match("bc"));
 }

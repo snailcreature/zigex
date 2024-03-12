@@ -14,4 +14,5 @@ defer re.deinit();
 - [X] Expression storage and validation (bracket alignment) (COMPLETED: 09/03/2024)
 - [X] Expression Parser (COMPLETED: 11/03/2024)
 - [X] Expression Compiler (COMPLETED: 11/03/2024)
-- [ ] Expression Matcher (WIP)
+- [X] Expression Matcher (COMPLETED: 12/03/2024)
+- [ ] Thorough testing and fixes
