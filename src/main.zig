@@ -232,7 +232,7 @@ pub fn Regex() type {
             output.generateAST() catch |err| { return err; };
             output.ast.cleanUp();
 
-            output.fsa = FSA().init(&output.ast) catch |err| { return err; };
+            output.fsa = FSA().init(&output.ast, allocator) catch |err| { return err; };
             errdefer output.fsa.?.deinit();
 
             return output;
@@ -248,6 +248,10 @@ pub fn Regex() type {
 
         pub fn match(self: *Self, input: string) bool {
             return self.fsa.?.match(input) catch false;
+        }
+
+        pub fn matchFirst(self: *Self, input: string) ?string {
+            return self.fsa.?.matchFirst(input) catch null;
         }
 
         /// Checks that the given regular expression is valid, containing the correct sequence of opening
@@ -464,6 +468,8 @@ pub fn FSA() type {
         nodes: [256]?Node = .{ .{ .nodeType = FSANodeTypes.Entry, } } ++ .{null} ** 254 ++ .{ .{ .nodeType = FSANodeTypes.Terminal, } },
         /// Number of nodes currently stored.
         nodeCount: usize = 1,
+        /// ArrayList containing matched transitions.
+        matchStack: ArrayList(char),
 
         /// A state in the FSA.
         const Node = struct {
@@ -471,9 +477,10 @@ pub fn FSA() type {
             transitions: [256]?*Node = .{null} ** 256,
         };
 
-        pub fn init(ast: *Regex().AST) !Self {
+        pub fn init(ast: *Regex().AST, allocator: std.mem.Allocator) !Self {
             var output = Self{
                 .ast = ast,
+                .matchStack = ArrayList(char).init(allocator),
             };
             errdefer output.deinit();
             if (output.nodes[0] == null) {
@@ -491,7 +498,7 @@ pub fn FSA() type {
         }
 
         pub fn deinit(self: *Self) void {
-            defer _ = self;
+            self.matchStack.deinit();
         }
 
         /// Takes in a string and attempts to match it to the Regular Expression.
@@ -500,16 +507,26 @@ pub fn FSA() type {
                 if (self.entryNode) |entry| {
                     self.currentNode = entry;
                 }
+                self.matchStack.clearAndFree();
             }
             _ = self.traverse(input) catch |err| { return err; };
             return self.currentNode.?.nodeType == FSANodeTypes.Terminal;
         }
 
         /// Takes a string as input and returns the first substring that matches or `null` if none match.
-        pub fn matchFirst(self: *Self, input: string) ?string {
-            _ = self;
-            _ = input;
-            return null;
+        pub fn matchFirst(self: *Self, input: string) !?string {
+            defer {
+                if (self.entryNode) |entry| {
+                    self.currentNode = entry;
+                }
+                self.matchStack.clearAndFree();
+                std.debug.print("\n\n", .{});
+            }
+            std.debug.print("\n\n", .{});
+            _ = self.traverse(input) catch |err| { return err; };
+            const out = self.matchStack.toOwnedSlice() catch |err| { return err; };
+            std.mem.reverse(char, out);
+            return out;
         }
 
         /// Generate the FSA structure recursively from provided AST.
@@ -518,7 +535,25 @@ pub fn FSA() type {
         /// to current and next node, rather than previous parameters.
         fn generateFSA(self: *Self, astNode: *Regex().AST, entryNode: *Node, terminalNode: *Node) !void {
             if (astNode.child == null and astNode.next == null) {
-                self.currentNode.?.transitions[epsilon] = terminalNode;
+                switch (astNode.nodeType) {
+                    .Literal => {
+                        self.nodes[self.nodeCount] = .{
+                            .nodeType = FSANodeTypes.State,
+                        };
+                        self.currentNode.?.transitions[astNode.value[0]] = terminalNode;
+
+                        // Repeats
+                        if (astNode.repeat.min == 0) {
+                            self.currentNode.?.transitions[epsilon] = terminalNode;
+                        }
+                        if (astNode.repeat.max == -1) {
+                            terminalNode.*.transitions[epsilon] = self.currentNode.?;
+                        }
+                    },
+                    else => {
+                        self.currentNode.?.transitions[epsilon] = terminalNode;
+                    }
+                }
                 self.currentNode = terminalNode;
                 return;
             }
@@ -648,10 +683,15 @@ pub fn FSA() type {
         fn traverse(self: *Self, input: string) !?string {
             // If we've reached the terminal, there's a match.
             if (self.currentNode.?.nodeType == FSANodeTypes.Terminal) {
-                return "";
+                std.debug.print("Terminal reached!\n", .{});
+                if (input.len > 0) {
+                    return "";
+                }
+                return input;
             }
             // If we've exhausted the input string, return null, triggering an attempted back track.
             if (input.len <= 0) {
+                _ = self.matchStack.popOrNull();
                 return null;
             }
 
@@ -659,12 +699,16 @@ pub fn FSA() type {
             // Attempt transition based on the first character.
             var transistion = self.currentNode.?.transitions[input[0]];
             if (transistion) |trans| {
+                std.debug.print("Transition : {c}\n", .{input[0]});
                 self.currentNode = trans;
                 const result = self.traverse(input[1..]) catch |err| { return err; };
                 // If exploring that path succeeds, return the result.
                 if (result) |res| {
-                    var buff: [128]u8 = .{0} ** 128;
-                    return std.fmt.bufPrint(&buff, "{c}{s}", .{input[0], res}) catch |err| { return err; };
+                    self.matchStack.append(input[0]) catch |err| { return err; };
+                    // var buff: [128]u8 = undefined;
+                    std.debug.print("{c} : {s}\n", .{input[0], res});
+                    return input;
+                    // return std.fmt.bufPrintZ(&buff, "{c}{s}", .{input[0], res}) catch |err| { return err; };
                     // return input[0..1] ++ res;
                 }
             }
@@ -672,10 +716,12 @@ pub fn FSA() type {
             self.currentNode = currentNode;
             transistion = self.currentNode.?.transitions[epsilon];
             if (transistion) |trans| {
+                std.debug.print("Transition : epsilon\n", .{});
                 self.currentNode = trans;
                 const result = self.traverse(input) catch |err| { return err; };
                 if (result) |res| {
-                    return res;
+                    std.debug.print("{s}\n", .{res});
+                    return input;
                 }
             }
 
@@ -683,15 +729,26 @@ pub fn FSA() type {
             self.currentNode = currentNode;
             transistion = self.currentNode.?.transitions[technicalMove];
             if (transistion) |trans| {
+                std.debug.print("Transition : technical\n", .{});
                 self.currentNode = trans;
                 const result = self.traverse(input) catch |err| { return err; };
                 if (result) |res| {
-                    return res;
+                    std.debug.print("{s}\n", .{res});
+                    return input;
                 }
             }
 
-            // If all paths fail, return null.
+            // If none of the above works, discard the first character and try again.
+            self.currentNode = self.entryNode.?;
+            std.debug.print("Backtrack : Found {c}\n", .{input[0]});
+            const result = self.traverse(input[1..]) catch |err| { return err; };
+            if (result) |res| {
+                return res;
+            }
             return null;
+
+            // If all paths fail, return null.
+            //return null;
         }
         const Self = @This();
     };
@@ -731,7 +788,43 @@ test "Regex String with alternation Parseable" {
     defer re.deinit();
 }
 test "Attempt match on \"bc\"" {
-    var re = try Regex().init("a|(bc)|d", std.testing.allocator);
+    var re = Regex().init("a|(bc)|d", std.testing.allocator) catch |err| { return err; };
     defer re.deinit();
     try std.testing.expect(re.match("bc"));
+}
+test "Attempt matchFirst on \"world\" in string" {
+    var re = try Regex().init("world", std.testing.allocator);
+    defer re.deinit();
+    const result = re.matchFirst("Hello, world!");
+    std.debug.print("\n\n{any}\n\n", .{result});
+    if (result) |res| {
+        try std.testing.expectEqualStrings("world", res);
+    }
+    else {
+        try std.testing.expect(result == null);
+    }
+}
+test "Attempt matchFirst on \"world\"" {
+    var re = try Regex().init("world", std.testing.allocator);
+    defer re.deinit();
+    const result = re.matchFirst("world");
+    std.debug.print("\n\n{any}\n\n", .{result});
+    if (result) |res| {
+        try std.testing.expectEqualStrings("world", res);
+    }
+    else {
+        try std.testing.expect(result == null);
+    }
+}
+test "Attempt matchFirst on \"world\" embedded in string" {
+    var re = try Regex().init("world", std.testing.allocator);
+    defer re.deinit();
+    const result = re.matchFirst("Wow! Hello, world!");
+    std.debug.print("\n\n{any}\n\n", .{result});
+    if (result) |res| {
+        try std.testing.expectEqualStrings("world", res);
+    }
+    else {
+        try std.testing.expect(result == null);
+    }
 }
