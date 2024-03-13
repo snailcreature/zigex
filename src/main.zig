@@ -19,6 +19,15 @@ const char = util.char;
 const string = util.string;
 const valueRange = util.valueRange;
 
+var buffA: [1000]u8 = undefined;
+var buffB: [1000]u8 = undefined;
+
+var fbaA = std.heap.FixedBufferAllocator.init(&buffA);
+var fbaB = std.heap.FixedBufferAllocator.init(&buffB);
+
+pub const regexAllocator = fbaA.allocator();
+pub const fsmAllocator = fbaB.allocator();
+
 /// Errors related to Regex
 pub const RegexError = error{
     GenericRegexError,
@@ -215,9 +224,9 @@ pub fn Regex() type {
         };
 
         /// Initialise the regex engine with an `expression`.
-        pub fn init(expression: string, allocator: std.mem.Allocator) !Self {
+        pub fn init(expression: string, stackAllocator: std.mem.Allocator, fsaAllocator: std.mem.Allocator) !Self {
             var output: Self = Self{
-                .stack = ArrayList(char).init(allocator),
+                .stack = ArrayList(char).init(stackAllocator),
                 .exp = expression,
                 .ast = AST{
                     .nodeType = ASTNodeTypes.Expression,
@@ -232,7 +241,7 @@ pub fn Regex() type {
             output.generateAST() catch |err| { return err; };
             output.ast.cleanUp();
 
-            output.fsa = FSA().init(&output.ast, allocator) catch |err| { return err; };
+            output.fsa = FSA().init(&output.ast, fsaAllocator) catch |err| { return err; };
             errdefer output.fsa.?.deinit();
 
             return output;
@@ -519,13 +528,9 @@ pub fn FSA() type {
                 if (self.entryNode) |entry| {
                     self.currentNode = entry;
                 }
-                self.matchStack.clearAndFree();
-                std.debug.print("\n\n", .{});
             }
-            std.debug.print("\n\n", .{});
-            _ = self.traverse(input) catch |err| { return err; };
-            const out = self.matchStack.toOwnedSlice() catch |err| { return err; };
-            std.mem.reverse(char, out);
+            const out = self.traverse(input) catch |err| { return err; };
+            // const out = self.matchStack.toOwnedSlice() catch |err| { return err; };
             return out;
         }
 
@@ -684,37 +689,32 @@ pub fn FSA() type {
             const currentNode = self.currentNode.?;
             // If the terminal has been reached, return the result
             if (self.currentNode.?.nodeType == FSANodeTypes.Terminal) {
-                std.debug.print("Terminal reached! Returning...\n", .{});
-                return input;
+                return self.matchStack.toOwnedSlice() catch |err| { return err; };
             }
             // If the end of the string is reached, return null
             if (input.len <= 0) {
-                std.debug.print("Input consumed. Returning...\n", .{});
                 return null;
             }
             // If there is a character transition, do it
             if (self.currentNode.?.transitions[input[0]]) |transition| {
                 self.matchStack.append(input[0]) catch |err| { return err; };
                 self.currentNode = transition;
-                std.debug.print("Transition: {c}\n", .{input[0]});
                 return self.traverse(input[1..]) catch |err| { return err; };
             }
             // If there is an epsilon transition, do it
+            self.currentNode = currentNode;
             if (self.currentNode.?.transitions[epsilon]) |transition| {
                 self.currentNode = transition;
-                std.debug.print("Transition: epsilon\n", .{});
                 return self.traverse(input) catch |err| { return err; };
             }
             // If there is a technical transition do it
             if (self.currentNode.?.transitions[technicalMove]) |transition| {
                 self.currentNode = transition;
-                std.debug.print("Transition: technical\n", .{});
                 return self.traverse(input) catch |err| { return err; };
             }
             // If there none of this works, attempt a backtrack
-            const popped = self.matchStack.popOrNull();
-            self.currentNode = currentNode;
-            std.debug.print("Transition: backtrack, {?c}\t{s}\n", .{popped, input});
+            _ = self.matchStack.popOrNull();
+            self.currentNode = self.entryNode.?;
             return self.traverse(input[1..]);
             // If backtracking fails, return null
             // return null;
@@ -725,7 +725,7 @@ pub fn FSA() type {
 
 
 test "Regex Test" {
-    var re = try Regex().init("abc{2}[abc](ab|c)[de]{3,}", std.testing.allocator);
+    var re = try Regex().init("abc{2}[abc](ab|c)[de]{3,}", regexAllocator, fsmAllocator);
     defer re.deinit();
     try std.testing.expectEqualStrings("abc{2}[abc](ab|c)[de]{3,}", re.exp);
 }
@@ -733,39 +733,39 @@ test "Regex String Parseable" {
     std.log.info("Creating Regex object...", .{});
     const regex = Regex();
     std.log.info("Initialising...", .{});
-    var re = try regex.init("abc{2}[abc](ab|c)[de]{3,}", std.testing.allocator);
+    var re = try regex.init("abc{2}[abc](ab|c)[de]{3,}", regexAllocator, fsmAllocator);
     defer re.deinit();
     try std.testing.expect(re.validExp() catch false);
 }
 test "Regex String Not Parseable" {
-    try std.testing.expectError(RegexError.InvalidExpression, Regex().init("abc{2}[abc](ab|c)[de]{3,}]", std.testing.allocator));
+    try std.testing.expectError(RegexError.InvalidExpression, Regex().init("abc{2}[abc](ab|c)[de]{3,}]", regexAllocator, fsmAllocator));
 }
 test "Regex String with literals Parseable" {
-    var re = try Regex().init("abc{2}[abc](ab|c)[de]{3,}", std.testing.allocator);
+    var re = try Regex().init("abc{2}[abc](ab|c)[de]{3,}", regexAllocator, fsmAllocator);
     defer re.deinit();
     try std.testing.expectEqual(true, re.validExp() catch false);
 }
 test "Regex String with literals Not Parseable" {
-    try std.testing.expectError(RegexError.InvalidExpression, Regex().init("abc{2}[abc](ab|c)[de]{3,}]", std.testing.allocator));
+    try std.testing.expectError(RegexError.InvalidExpression, Regex().init("abc{2}[abc](ab|c)[de]{3,}]", regexAllocator, fsmAllocator));
 }
 test "Regex String with repetition markers Parseable" {
-    var re = try Regex().init("a?b*c+", std.testing.allocator);
+    var re = try Regex().init("a?b*c+", regexAllocator, fsmAllocator);
     defer re.deinit();
 }
 test "Regex String with alternation Parseable" {
-    var re = try Regex().init("a|(bc)|d", std.testing.allocator);
+    var re = try Regex().init("a|(bc)|d", regexAllocator, fsmAllocator);
     defer re.deinit();
 }
 test "Attempt match on \"bc\"" {
-    var re = Regex().init("a|(bc)|d", std.testing.allocator) catch |err| { return err; };
+    var re = Regex().init("a|(bc)|d", regexAllocator, fsmAllocator) catch |err| { return err; };
     defer re.deinit();
     try std.testing.expect(re.match("bc"));
 }
 test "Attempt matchFirst on \"world\" in string" {
-    var re = try Regex().init("world", std.testing.allocator);
+    var re = try Regex().init("world", regexAllocator, fsmAllocator);
     defer re.deinit();
     const result = re.matchFirst("Hello, world!");
-    std.debug.print("\n\n{any}\n\n", .{result});
+    std.debug.print("\n\n{?s}\n\n", .{result});
     if (result) |res| {
         try std.testing.expectEqualStrings("world", res);
     }
@@ -774,10 +774,10 @@ test "Attempt matchFirst on \"world\" in string" {
     }
 }
 test "Attempt matchFirst on \"world\"" {
-    var re = try Regex().init("world", std.testing.allocator);
+    var re = try Regex().init("world", regexAllocator, fsmAllocator);
     defer re.deinit();
     const result = re.matchFirst("world");
-    std.debug.print("\n\n{any}\n\n", .{result});
+    std.debug.print("\n\n{?s}\n\n", .{result});
     if (result) |res| {
         try std.testing.expectEqualStrings("world", res);
     }
@@ -786,10 +786,10 @@ test "Attempt matchFirst on \"world\"" {
     }
 }
 test "Attempt matchFirst on \"world\" embedded in string" {
-    var re = try Regex().init("world", std.testing.allocator);
+    var re = try Regex().init("world", regexAllocator, fsmAllocator);
     defer re.deinit();
     const result = re.matchFirst("Wow! Hello, world!");
-    std.debug.print("\n\n{any}\n\n", .{result});
+    std.debug.print("\n\n{?s}\n\n", .{result});
     if (result) |res| {
         try std.testing.expectEqualStrings("world", res);
     }
