@@ -25,7 +25,9 @@ var buffB: [1000]u8 = undefined;
 var fbaA = std.heap.FixedBufferAllocator.init(&buffA);
 var fbaB = std.heap.FixedBufferAllocator.init(&buffB);
 
+/// Memory allocator for the Regex function and struct.
 pub const regexAllocator = fbaA.allocator();
+/// Memory allocator for the FSA.
 pub const fsmAllocator = fbaB.allocator();
 
 /// Errors related to Regex
