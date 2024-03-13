@@ -681,74 +681,43 @@ pub fn FSA() type {
 
         /// Tranverse the FSA, attempting transitions based on the first character of the input string.
         fn traverse(self: *Self, input: string) !?string {
-            // If we've reached the terminal, there's a match.
+            const currentNode = self.currentNode.?;
+            // If the terminal has been reached, return the result
             if (self.currentNode.?.nodeType == FSANodeTypes.Terminal) {
-                std.debug.print("Terminal reached!\n", .{});
-                if (input.len > 0) {
-                    return "";
-                }
+                std.debug.print("Terminal reached! Returning...\n", .{});
                 return input;
             }
-            // If we've exhausted the input string, return null, triggering an attempted back track.
+            // If the end of the string is reached, return null
             if (input.len <= 0) {
-                _ = self.matchStack.popOrNull();
+                std.debug.print("Input consumed. Returning...\n", .{});
                 return null;
             }
-
-            const currentNode = self.currentNode.?;
-            // Attempt transition based on the first character.
-            var transistion = self.currentNode.?.transitions[input[0]];
-            if (transistion) |trans| {
-                std.debug.print("Transition : {c}\n", .{input[0]});
-                self.currentNode = trans;
-                const result = self.traverse(input[1..]) catch |err| { return err; };
-                // If exploring that path succeeds, return the result.
-                if (result) |res| {
-                    self.matchStack.append(input[0]) catch |err| { return err; };
-                    // var buff: [128]u8 = undefined;
-                    std.debug.print("{c} : {s}\n", .{input[0], res});
-                    return input;
-                    // return std.fmt.bufPrintZ(&buff, "{c}{s}", .{input[0], res}) catch |err| { return err; };
-                    // return input[0..1] ++ res;
-                }
+            // If there is a character transition, do it
+            if (self.currentNode.?.transitions[input[0]]) |transition| {
+                self.matchStack.append(input[0]) catch |err| { return err; };
+                self.currentNode = transition;
+                std.debug.print("Transition: {c}\n", .{input[0]});
+                return self.traverse(input[1..]) catch |err| { return err; };
             }
-            // Otherwise, backtrack and attempt the epsilon path.
+            // If there is an epsilon transition, do it
+            if (self.currentNode.?.transitions[epsilon]) |transition| {
+                self.currentNode = transition;
+                std.debug.print("Transition: epsilon\n", .{});
+                return self.traverse(input) catch |err| { return err; };
+            }
+            // If there is a technical transition do it
+            if (self.currentNode.?.transitions[technicalMove]) |transition| {
+                self.currentNode = transition;
+                std.debug.print("Transition: technical\n", .{});
+                return self.traverse(input) catch |err| { return err; };
+            }
+            // If there none of this works, attempt a backtrack
+            const popped = self.matchStack.popOrNull();
             self.currentNode = currentNode;
-            transistion = self.currentNode.?.transitions[epsilon];
-            if (transistion) |trans| {
-                std.debug.print("Transition : epsilon\n", .{});
-                self.currentNode = trans;
-                const result = self.traverse(input) catch |err| { return err; };
-                if (result) |res| {
-                    std.debug.print("{s}\n", .{res});
-                    return input;
-                }
-            }
-
-            // If epsilon leads nowhere, try a technical move
-            self.currentNode = currentNode;
-            transistion = self.currentNode.?.transitions[technicalMove];
-            if (transistion) |trans| {
-                std.debug.print("Transition : technical\n", .{});
-                self.currentNode = trans;
-                const result = self.traverse(input) catch |err| { return err; };
-                if (result) |res| {
-                    std.debug.print("{s}\n", .{res});
-                    return input;
-                }
-            }
-
-            // If none of the above works, discard the first character and try again.
-            self.currentNode = self.entryNode.?;
-            std.debug.print("Backtrack : Found {c}\n", .{input[0]});
-            const result = self.traverse(input[1..]) catch |err| { return err; };
-            if (result) |res| {
-                return res;
-            }
-            return null;
-
-            // If all paths fail, return null.
-            //return null;
+            std.debug.print("Transition: backtrack, {?c}\t{s}\n", .{popped, input});
+            return self.traverse(input[1..]);
+            // If backtracking fails, return null
+            // return null;
         }
         const Self = @This();
     };
