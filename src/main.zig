@@ -19,6 +19,17 @@ const char = util.char;
 const string = util.string;
 const valueRange = util.valueRange;
 
+var buffA: [1000]u8 = undefined;
+var buffB: [1000]u8 = undefined;
+
+var fbaA = std.heap.FixedBufferAllocator.init(&buffA);
+var fbaB = std.heap.FixedBufferAllocator.init(&buffB);
+
+/// Memory allocator for the Regex function and struct.
+pub const regexAllocator = fbaA.allocator();
+/// Memory allocator for the FSA.
+pub const fsmAllocator = fbaB.allocator();
+
 /// Errors related to Regex
 pub const RegexError = error{
     GenericRegexError,
@@ -215,9 +226,9 @@ pub fn Regex() type {
         };
 
         /// Initialise the regex engine with an `expression`.
-        pub fn init(expression: string, allocator: std.mem.Allocator) !Self {
+        pub fn init(expression: string, stackAllocator: std.mem.Allocator, fsaAllocator: std.mem.Allocator) !Self {
             var output: Self = Self{
-                .stack = ArrayList(char).init(allocator),
+                .stack = ArrayList(char).init(stackAllocator),
                 .exp = expression,
                 .ast = AST{
                     .nodeType = ASTNodeTypes.Expression,
@@ -232,7 +243,7 @@ pub fn Regex() type {
             output.generateAST() catch |err| { return err; };
             output.ast.cleanUp();
 
-            output.fsa = FSA().init(&output.ast) catch |err| { return err; };
+            output.fsa = FSA().init(&output.ast, fsaAllocator) catch |err| { return err; };
             errdefer output.fsa.?.deinit();
 
             return output;
@@ -248,6 +259,10 @@ pub fn Regex() type {
 
         pub fn match(self: *Self, input: string) bool {
             return self.fsa.?.match(input) catch false;
+        }
+
+        pub fn matchFirst(self: *Self, input: string) ?string {
+            return self.fsa.?.matchFirst(input) catch null;
         }
 
         /// Checks that the given regular expression is valid, containing the correct sequence of opening
@@ -464,6 +479,8 @@ pub fn FSA() type {
         nodes: [256]?Node = .{ .{ .nodeType = FSANodeTypes.Entry, } } ++ .{null} ** 254 ++ .{ .{ .nodeType = FSANodeTypes.Terminal, } },
         /// Number of nodes currently stored.
         nodeCount: usize = 1,
+        /// ArrayList containing matched transitions.
+        matchStack: ArrayList(char),
 
         /// A state in the FSA.
         const Node = struct {
@@ -471,9 +488,10 @@ pub fn FSA() type {
             transitions: [256]?*Node = .{null} ** 256,
         };
 
-        pub fn init(ast: *Regex().AST) !Self {
+        pub fn init(ast: *Regex().AST, allocator: std.mem.Allocator) !Self {
             var output = Self{
                 .ast = ast,
+                .matchStack = ArrayList(char).init(allocator),
             };
             errdefer output.deinit();
             if (output.nodes[0] == null) {
@@ -491,7 +509,7 @@ pub fn FSA() type {
         }
 
         pub fn deinit(self: *Self) void {
-            defer _ = self;
+            self.matchStack.deinit();
         }
 
         /// Takes in a string and attempts to match it to the Regular Expression.
@@ -500,16 +518,22 @@ pub fn FSA() type {
                 if (self.entryNode) |entry| {
                     self.currentNode = entry;
                 }
+                self.matchStack.clearAndFree();
             }
             _ = self.traverse(input) catch |err| { return err; };
             return self.currentNode.?.nodeType == FSANodeTypes.Terminal;
         }
 
         /// Takes a string as input and returns the first substring that matches or `null` if none match.
-        pub fn matchFirst(self: *Self, input: string) ?string {
-            _ = self;
-            _ = input;
-            return null;
+        pub fn matchFirst(self: *Self, input: string) !?string {
+            defer {
+                if (self.entryNode) |entry| {
+                    self.currentNode = entry;
+                }
+            }
+            const out = self.traverse(input) catch |err| { return err; };
+            // const out = self.matchStack.toOwnedSlice() catch |err| { return err; };
+            return out;
         }
 
         /// Generate the FSA structure recursively from provided AST.
@@ -518,7 +542,25 @@ pub fn FSA() type {
         /// to current and next node, rather than previous parameters.
         fn generateFSA(self: *Self, astNode: *Regex().AST, entryNode: *Node, terminalNode: *Node) !void {
             if (astNode.child == null and astNode.next == null) {
-                self.currentNode.?.transitions[epsilon] = terminalNode;
+                switch (astNode.nodeType) {
+                    .Literal => {
+                        self.nodes[self.nodeCount] = .{
+                            .nodeType = FSANodeTypes.State,
+                        };
+                        self.currentNode.?.transitions[astNode.value[0]] = terminalNode;
+
+                        // Repeats
+                        if (astNode.repeat.min == 0) {
+                            self.currentNode.?.transitions[epsilon] = terminalNode;
+                        }
+                        if (astNode.repeat.max == -1) {
+                            terminalNode.*.transitions[epsilon] = self.currentNode.?;
+                        }
+                    },
+                    else => {
+                        self.currentNode.?.transitions[epsilon] = terminalNode;
+                    }
+                }
                 self.currentNode = terminalNode;
                 return;
             }
@@ -646,52 +688,38 @@ pub fn FSA() type {
 
         /// Tranverse the FSA, attempting transitions based on the first character of the input string.
         fn traverse(self: *Self, input: string) !?string {
-            // If we've reached the terminal, there's a match.
+            const currentNode = self.currentNode.?;
+            // If the terminal has been reached, return the result
             if (self.currentNode.?.nodeType == FSANodeTypes.Terminal) {
-                return "";
+                return self.matchStack.toOwnedSlice() catch |err| { return err; };
             }
-            // If we've exhausted the input string, return null, triggering an attempted back track.
+            // If the end of the string is reached, return null
             if (input.len <= 0) {
                 return null;
             }
-
-            const currentNode = self.currentNode.?;
-            // Attempt transition based on the first character.
-            var transistion = self.currentNode.?.transitions[input[0]];
-            if (transistion) |trans| {
-                self.currentNode = trans;
-                const result = self.traverse(input[1..]) catch |err| { return err; };
-                // If exploring that path succeeds, return the result.
-                if (result) |res| {
-                    var buff: [128]u8 = .{0} ** 128;
-                    return std.fmt.bufPrint(&buff, "{c}{s}", .{input[0], res}) catch |err| { return err; };
-                    // return input[0..1] ++ res;
-                }
+            // If there is a character transition, do it
+            if (self.currentNode.?.transitions[input[0]]) |transition| {
+                self.matchStack.append(input[0]) catch |err| { return err; };
+                self.currentNode = transition;
+                return self.traverse(input[1..]) catch |err| { return err; };
             }
-            // Otherwise, backtrack and attempt the epsilon path.
+            // If there is an epsilon transition, do it
             self.currentNode = currentNode;
-            transistion = self.currentNode.?.transitions[epsilon];
-            if (transistion) |trans| {
-                self.currentNode = trans;
-                const result = self.traverse(input) catch |err| { return err; };
-                if (result) |res| {
-                    return res;
-                }
+            if (self.currentNode.?.transitions[epsilon]) |transition| {
+                self.currentNode = transition;
+                return self.traverse(input) catch |err| { return err; };
             }
-
-            // If epsilon leads nowhere, try a technical move
-            self.currentNode = currentNode;
-            transistion = self.currentNode.?.transitions[technicalMove];
-            if (transistion) |trans| {
-                self.currentNode = trans;
-                const result = self.traverse(input) catch |err| { return err; };
-                if (result) |res| {
-                    return res;
-                }
+            // If there is a technical transition do it
+            if (self.currentNode.?.transitions[technicalMove]) |transition| {
+                self.currentNode = transition;
+                return self.traverse(input) catch |err| { return err; };
             }
-
-            // If all paths fail, return null.
-            return null;
+            // If there none of this works, attempt a backtrack
+            _ = self.matchStack.popOrNull();
+            self.currentNode = self.entryNode.?;
+            return self.traverse(input[1..]);
+            // If backtracking fails, return null
+            // return null;
         }
         const Self = @This();
     };
@@ -699,7 +727,7 @@ pub fn FSA() type {
 
 
 test "Regex Test" {
-    var re = try Regex().init("abc{2}[abc](ab|c)[de]{3,}", std.testing.allocator);
+    var re = try Regex().init("abc{2}[abc](ab|c)[de]{3,}", regexAllocator, fsmAllocator);
     defer re.deinit();
     try std.testing.expectEqualStrings("abc{2}[abc](ab|c)[de]{3,}", re.exp);
 }
@@ -707,31 +735,67 @@ test "Regex String Parseable" {
     std.log.info("Creating Regex object...", .{});
     const regex = Regex();
     std.log.info("Initialising...", .{});
-    var re = try regex.init("abc{2}[abc](ab|c)[de]{3,}", std.testing.allocator);
+    var re = try regex.init("abc{2}[abc](ab|c)[de]{3,}", regexAllocator, fsmAllocator);
     defer re.deinit();
     try std.testing.expect(re.validExp() catch false);
 }
 test "Regex String Not Parseable" {
-    try std.testing.expectError(RegexError.InvalidExpression, Regex().init("abc{2}[abc](ab|c)[de]{3,}]", std.testing.allocator));
+    try std.testing.expectError(RegexError.InvalidExpression, Regex().init("abc{2}[abc](ab|c)[de]{3,}]", regexAllocator, fsmAllocator));
 }
 test "Regex String with literals Parseable" {
-    var re = try Regex().init("abc{2}[abc](ab|c)[de]{3,}", std.testing.allocator);
+    var re = try Regex().init("abc{2}[abc](ab|c)[de]{3,}", regexAllocator, fsmAllocator);
     defer re.deinit();
     try std.testing.expectEqual(true, re.validExp() catch false);
 }
 test "Regex String with literals Not Parseable" {
-    try std.testing.expectError(RegexError.InvalidExpression, Regex().init("abc{2}[abc](ab|c)[de]{3,}]", std.testing.allocator));
+    try std.testing.expectError(RegexError.InvalidExpression, Regex().init("abc{2}[abc](ab|c)[de]{3,}]", regexAllocator, fsmAllocator));
 }
 test "Regex String with repetition markers Parseable" {
-    var re = try Regex().init("a?b*c+", std.testing.allocator);
+    var re = try Regex().init("a?b*c+", regexAllocator, fsmAllocator);
     defer re.deinit();
 }
 test "Regex String with alternation Parseable" {
-    var re = try Regex().init("a|(bc)|d", std.testing.allocator);
+    var re = try Regex().init("a|(bc)|d", regexAllocator, fsmAllocator);
     defer re.deinit();
 }
 test "Attempt match on \"bc\"" {
-    var re = try Regex().init("a|(bc)|d", std.testing.allocator);
+    var re = Regex().init("a|(bc)|d", regexAllocator, fsmAllocator) catch |err| { return err; };
     defer re.deinit();
     try std.testing.expect(re.match("bc"));
+}
+test "Attempt matchFirst on \"world\" in string" {
+    var re = try Regex().init("world", regexAllocator, fsmAllocator);
+    defer re.deinit();
+    const result = re.matchFirst("Hello, world!");
+    std.debug.print("\n\n{?s}\n\n", .{result});
+    if (result) |res| {
+        try std.testing.expectEqualStrings("world", res);
+    }
+    else {
+        try std.testing.expect(result == null);
+    }
+}
+test "Attempt matchFirst on \"world\"" {
+    var re = try Regex().init("world", regexAllocator, fsmAllocator);
+    defer re.deinit();
+    const result = re.matchFirst("world");
+    std.debug.print("\n\n{?s}\n\n", .{result});
+    if (result) |res| {
+        try std.testing.expectEqualStrings("world", res);
+    }
+    else {
+        try std.testing.expect(result == null);
+    }
+}
+test "Attempt matchFirst on \"world\" embedded in string" {
+    var re = try Regex().init("world", regexAllocator, fsmAllocator);
+    defer re.deinit();
+    const result = re.matchFirst("Wow! Hello, world!");
+    std.debug.print("\n\n{?s}\n\n", .{result});
+    if (result) |res| {
+        try std.testing.expectEqualStrings("world", res);
+    }
+    else {
+        try std.testing.expect(result == null);
+    }
 }
