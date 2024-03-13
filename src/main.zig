@@ -26,9 +26,9 @@ var fbaA = std.heap.FixedBufferAllocator.init(&buffA);
 var fbaB = std.heap.FixedBufferAllocator.init(&buffB);
 
 /// Memory allocator for the Regex function and struct.
-pub const regexAllocator = fbaA.allocator();
+const regexAllocator = fbaA.allocator();
 /// Memory allocator for the FSA.
-pub const fsmAllocator = fbaB.allocator();
+const fsmAllocator = fbaB.allocator();
 
 /// Errors related to Regex
 pub const RegexError = error{
