@@ -542,303 +542,220 @@ pub fn FSA() type {
         /// DEVNOTE: When reaching group or alternation, redefine entry and terminal node
         /// to current and next node, rather than previous parameters.
         fn generateFSA(self: *Self, astNode: *Regex().AST, entryNode: *Node, terminalNode: *Node) !void {
-            if (astNode.child == null and astNode.next == null) {
+            // Each new node increases self.nodeCount by 1
+            // Handle non-terminals
+            if (astNode.child != null and astNode.next != null) {
                 switch (astNode.nodeType) {
-                    .Literal => {
+                    // Handle Expressions
+                    .Expression => {
+                        // Create new node
                         self.nodes[self.nodeCount] = .{
                             .nodeType = FSANodeTypes.State,
                             .n = self.nodeCount,
                         };
 
-                        // Repeats, revamped
-                        const min: usize = @intCast(astNode.repeat.min);
-                        if (min == 0) {
-                            self.currentNode.?.transitions[epsilon] = terminalNode;
-                        }
-                        else if (min > 1) {
-                            for (1..min) |_| {
-                                self.currentNode = &self.nodes[self.nodeCount].?;
-                                self.nodeCount += 1;
-
-                                self.nodes[self.nodeCount] = .{
-                                    .nodeType = FSANodeTypes.State,
-                                    .n = self.nodeCount,
-                                };
-                                self.currentNode.?.transitions[astNode.value[0]] = &self.nodes[self.nodeCount].?;
-                            }
-                        }
-                        if (astNode.repeat.max > min) {
-                            const max: usize = @intCast(astNode.repeat.max);
-                            for (min..max) |_| {
-                                self.currentNode = &self.nodes[self.nodeCount].?;
-                                self.nodeCount += 1;
-
-                                self.nodes[self.nodeCount] = .{
-                                    .nodeType = FSANodeTypes.State,
-                                    .n = self.nodeCount,
-                                };
-                                self.currentNode.?.transitions[astNode.value[0]] = &self.nodes[self.nodeCount].?;
-                            }
-                            self.currentNode = &self.nodes[self.nodeCount].?;
-                            self.currentNode.?.transitions[astNode.value[0]] = terminalNode;
-
-                            for (0..max-min) |i| {
-                                self.nodes[self.nodeCount-i].?.transitions[epsilon] = terminalNode;
-                            }
-                        }
-                        else {
-                            terminalNode.*.transitions[epsilon] = self.currentNode.?;
-                        }
-                        self.currentNode.?.transitions[astNode.value[0]] = terminalNode;
+                        // Technical transition onto new node
+                        self.currentNode.?.transitions[technicalMove] = &self.nodes[self.nodeCount].?;
+                        self.currentNode = self.nodes[self.nodeCount].?;
+                        self.nodeCount += 1;
+                        self.generateFSA(astNode.next.?, entryNode, terminalNode) catch |err| { return err; };
                     },
-                    .OneOfRange => {
+                    // Handle Literals
+                    .Literal => {
+                        // Get minimum and maximum repeats
+                        const min: usize = @intCast(astNode.repeat.min);
+                        const max: usize = @intCast(astNode.repeat.max);
+                        // Create one node, transitioning on literal
                         self.nodes[self.nodeCount] = .{
                             .nodeType = FSANodeTypes.State,
-                            .n = self.nodeCount,  
+                            .n = self.nodeCount,
                         };
-
-                        // Repeats
-                        const min: usize = @intCast(astNode.repeat.min);
-                        if (min == 0) {
-                            self.currentNode.?.transitions[epsilon] = &self.nodes[self.nodeCount].?;
-                        }
-                        else if (min > 1) {
-                            for (1..min) |_| {
-                                self.currentNode = &self.nodes[self.nodeCount].?;
-                                self.nodeCount += 1;
-
-                                self.nodes[self.nodeCount] = .{
+                        self.currentNode.?.transitions[astNode.value[0]] = &self.nodes[self.nodeCount].?;
+                        // If minimum > 0, create up to minimum-1 identical nodes
+                        var x: usize = 0;
+                        if (min > 0) {
+                            for (1..min) |i| {
+                                self.nodes[self.nodeCount + i] = .{
                                     .nodeType = FSANodeTypes.State,
-                                    .n = self.nodeCount,
+                                    .n = self.nodeCount + i,
                                 };
-                                for (astNode.value) |ch| {
-                                    self.currentNode.?.transitions[ch] = &self.nodes[self.nodeCount].?;
-                                }
+                                self.nodes[self.nodeCount + i - 1].?.transitions[astNode.value[0]] = &self.nodes[self.nodeCount + i].?;
+                                x += 1;
                             }
                         }
-                        if (astNode.repeat.max > min) {
-                            const max: usize = @intCast(astNode.repeat.max);
-                            for (min..max) |_| {
-                                self.currentNode = &self.nodes[self.nodeCount].?;
-                                self.nodeCount += 1;
-
-                                self.nodes[self.nodeCount] = .{
-                                    .nodeType = FSANodeTypes.State,
-                                    .n = self.nodeCount,
-                                };
-                                for (astNode.value) |ch| {
-                                    self.currentNode.?.transitions[ch] = &self.nodes[self.nodeCount].?;
-                                }
-                            }
+                        // If maximum > minimum, create a futher maximum-minimum identical nodes
+                        var y: usize = 0;
+                        if (max > min) {
                             for (0..max-min) |i| {
-                                self.nodes[self.nodeCount-i].?.transitions[epsilon] = terminalNode;
+                                self.nodes[self.nodeCount + i + x] = .{
+                                    .nodeType = FSANodeTypes.State,
+                                    .n = self.nodeCount + i + x,
+                                };
+                                self.nodes[self.nodeCount + i + x - 1].?.transitions[astNode.value[0]] = &self.nodes[self.nodeCount + i + x].?;
+                                y += 1;
+                            }
+                            // For each of these nodes, connect all to the last via epsilon
+                            for (1..y+1) |i| {
+                                self.nodes[self.nodeCount + x + y - i].?.transitions[epsilon] = &self.nodes[self.nodeCount + y + x].?;
                             }
                         }
-                        else {
-                            terminalNode.transitions[epsilon] = self.currentNode.?;
+                        // Else if maximum < minimum (unlimited), link last to second-to-last via epsilon
+                        else if (astNode.repeat.max < min) {
+                            self.nodes[self.nodeCount + x + y].?.transitions[epsilon] = &self.nodes[self.nodeCount + y + x - 1].?;
                         }
-
+                        // If minimum == 0, link first to last via epsilon
+                        if (min == 0) {
+                            self.currentNode.?.transitions[epsilon] = &self.nodes[self.nodeCount + x + y].?;
+                        }
+                        // Move to new node
+                        self.currentNode = &self.nodes[self.nodeCount + x + y].?;
+                        self.nodeCount += 1 + x + y;
+                        self.generateFSA(astNode.next.?, entryNode, terminalNode) catch |err| { return err; };
+                    },
+                    // Handle OneOfRanges
+                    .OneOfRange => {
+                        // Get minimum and maximum repeats
+                        const min: usize = @intCast(astNode.repeat.min);
+                        const max: usize = @intCast(astNode.repeat.max);
+                        // Create one node, transitioning on literal
+                        self.nodes[self.nodeCount] = .{
+                            .nodeType = FSANodeTypes.State,
+                            .n = self.nodeCount,
+                        };
                         for (astNode.value) |ch| {
                             self.currentNode.?.transitions[ch] = &self.nodes[self.nodeCount].?;
                         }
+                        // If minimum > 0, create up to minimum-1 identical nodes
+                        var x: usize = 0;
+                        if (min > 0) {
+                            for (1..min) |i| {
+                                self.nodes[self.nodeCount + i] = .{
+                                    .nodeType = FSANodeTypes.State,
+                                    .n = self.nodeCount + i,
+                                };
+                                for (astNode.value) |ch| {
+                                    self.nodes[self.nodeCount + i - 1].?.transitions[ch] = &self.nodes[self.nodeCount + i].?;
+                                }
+                                x += 1;
+                            }
+                        }
+                        // If maximum > minimum, create a futher maximum-minimum identical nodes
+                        var y: usize = 0;
+                        if (max > min) {
+                            for (0..max-min) |i| {
+                                self.nodes[self.nodeCount + i + x] = .{
+                                    .nodeType = FSANodeTypes.State,
+                                    .n = self.nodeCount + i + x,
+                                };
+                                for (astNode.value) |ch| {
+                                    self.nodes[self.nodeCount + i + x - 1].?.transitions[ch] = &self.nodes[self.nodeCount + i + x].?;
+                                }
+                                y += 1;
+                            }
+                            // For each of these nodes, connect all to the last via epsilon
+                            for (1..y+1) |i| {
+                                self.nodes[self.nodeCount + x + y - i].?.transitions[epsilon] = &self.nodes[self.nodeCount + y + x].?;
+                            }
+                        }
+                        // Else if maximum < minimum (unlimited), link last to second-to-last via epsilon
+                        else if (astNode.repeat.max < min) {
+                            self.nodes[self.nodeCount + x + y].?.transitions[epsilon] = &self.nodes[self.nodeCount + y + x - 1].?;
+                        }
+                        // If minimum == 0, link first to last via epsilon
+                        if (min == 0) {
+                            self.currentNode.?.transitions[epsilon] = &self.nodes[self.nodeCount + x + y].?;
+                        }
+                        // Move to new node
+                        self.currentNode = &self.nodes[self.nodeCount + x + y].?;
+                        self.nodeCount += 1 + x + y;
+                        self.generateFSA(astNode.next.?, entryNode, terminalNode) catch |err| { return err; };
                     },
-                    else => {
-                        self.currentNode.?.transitions[epsilon] = terminalNode;
-                    }
+                    // Handle Groups
+                    .Group => {
+                        // Get minimum and maximum repeats
+                        const min: usize = @intCast(astNode.repeat.min);
+                        const max: usize = @intCast(astNode.repeat.max);
+                        // Create newTerminal1 node
+                        self.nodes[self.nodeCount] = .{
+                            .nodeType = FSANodeTypes.State,
+                            .n = self.nodeCount,
+                        };
+                        const newTerminal1 = &self.nodes[self.nodeCount].?;
+                        // if minimum > 0, create up to minimum-1 extra newTerminalN nodesvar x: usize = 0;
+                        var x: usize = 0;
+                        if (min > 0) {
+                            for (1..min) |i| {
+                                self.nodes[self.nodeCount + i] = .{
+                                    .nodeType = FSANodeTypes.State,
+                                    .n = self.nodeCount + i,
+                                };
+                                x += 1;
+                            }
+                        }
+                        // if maximum > minimum, create a further maximum-minimum newTerminalN nodes
+                        var y: usize = 0;
+                        if (max > min) {
+                            for (0..max-min) |i| {
+                                self.nodes[self.nodeCount + i + x] = .{
+                                    .nodeType = FSANodeTypes.State,
+                                    .n = self.nodeCount + i + x,
+                                };
+                                y += 1;
+                            }
+                            // For each of these newTerminalN nodes, connect to the last via epsilon
+                            for (1..y+1) |i| {
+                                self.nodes[self.nodeCount + x + y - i].?.transitions[epsilon] = &self.nodes[self.nodeCount + y + x].?;
+                            }
+                        }
+                        // Else if maximum < minimum (unlimited), link last newTerminalN to newTerminal(N-1)
+                        else if (astNode.repeat.max < min) {
+                            self.nodes[self.nodeCount + x + y].?.transitions[epsilon] = &self.nodes[self.nodeCount + y + x - 1].?;
+                        }
+                        // If minimum == 0, link newTerminal1 to final newTerminalN via epsilon
+                        if (min == 0) {
+                            self.currentNode.?.transitions[epsilon] = &self.nodes[self.nodeCount + x + y].?;
+                        }
+                        // For each pair of newTerminal (N, N+1), run generateFSA with newTerminalN and newTerminalN+1
+                        self.nodeCount += 1 + x + y;
+                        const groupPairs: []*Node = .{self.currentNode.?, newTerminal1} ++ self.nodes[self.nodeCount..self.nodeCount+x+y+1];
+                        for (groupPairs[0..], groupPairs[1..]) |n, n1| {
+                            if (n != null and n1 != null) {
+                                self.currentNode = n;
+                                self.generateFSA(astNode.child.?, n, n1);
+                            }
+                        }
+                        // Move to final newTerminal
+                        self.currentNode = &self.nodes[self.currentNode + x + y].?;
+                    },
+                    // Handle Alternations
+                    .Alternation => {
+                        // Create two new nodes, newEntry and newTerminal
+                        self.nodes[self.nodeCount] = .{
+                            .nodeType = FSANodeTypes.State,
+                            .n = self.nodeCount,
+                        };
+                        const newEntry = &self.nodes[self.nodeCount].?;
+                        self.nodes[self.nodeCount+1] = .{
+                            .nodeType = FSANodeTypes.State,
+                            .n = self.nodeCount+1,
+                        };
+                        const newTerminal = &self.nodes[self.nodeCount+1].?;
+                        self.nodeCount += 2;
+                        // Generate branch for optionA using newEntry and newTerminal
+                        self.currentNode = newEntry;
+                        self.generateFSA(astNode.extraInfo.option1.?, newEntry, newTerminal);
+                        // Generate branch for optionB using newEntry and newTerminal
+                        self.currentNode = newEntry;
+                        self.generateFSA(astNode.extraInfo.option2.?, newEntry, newTerminal);
+                        // Move to newTerminal
+                        self.currentNode = newTerminal;
+                    },
+                    else => { unreachable; }
                 }
-                self.currentNode = terminalNode;
-                return;
             }
-            switch (astNode.nodeType) {
-                .Expression => {
-                    self.nodes[self.nodeCount] = .{
-                        .nodeType = FSANodeTypes.State,
-                        .n = self.nodeCount,
-                    };
-                    self.currentNode.?.transitions[technicalMove] = &self.nodes[self.nodeCount].?;
-                    self.currentNode = &self.nodes[self.nodeCount].?;
-                    self.nodeCount += 1;
-                    if (astNode.next) |astNext| {
-                        self.generateFSA(astNext, entryNode, terminalNode) catch |err| { return err; };
-                    }
-                },
-                .Group => {
-                    const newEntry: Node = .{
-                        .nodeType = FSANodeTypes.State,
-                        .n = self.nodeCount,
-                    };
-                    const newTerminal: Node = .{
-                        .nodeType = FSANodeTypes.State,
-                        .n = self.nodeCount+1,
-                    };
-                    self.nodes[self.nodeCount] = newEntry;
-                    const newEntryPos = self.nodeCount;
-                    self.nodes[self.nodeCount+1] = newTerminal;
-                    const newTerminalPos = self.nodeCount + 1;
-                    self.currentNode.?.transitions[technicalMove] = &self.nodes[self.nodeCount].?;
-                    
-                    // Repeats
-                    if (astNode.repeat.min == 0) {
-                        self.nodes[self.nodeCount].?.transitions[epsilon] = &self.nodes[self.nodeCount+1].?;
-                    }
-                    if (astNode.repeat.max == -1) {
-                        self.nodes[self.nodeCount+1].?.transitions[epsilon] = &self.nodes[self.nodeCount].?;
-                    }
-                    
-                    self.currentNode = &self.nodes[self.nodeCount].?;
-                    self.nodeCount += 2;
-                    if (astNode.child) |child| {
-                        self.generateFSA(child, &self.nodes[newEntryPos].?, &self.nodes[newTerminalPos].?) catch |err| { return err; };
-                    }
-                    self.nodes[self.nodeCount] = .{
-                        .nodeType = FSANodeTypes.State,
-                        .n = self.nodeCount,
-                    };
-                    self.nodes[newTerminalPos].?.transitions[technicalMove] = &self.nodes[self.nodeCount].?;
-                    self.currentNode = &self.nodes[self.nodeCount].?;
-                    self.nodeCount += 1;
-                    if (astNode.next) |next| {
-                        self.generateFSA(next, entryNode, terminalNode) catch |err| { return err; };
-                    }
-                },
-                .Alternation => {
-                    self.nodes[self.nodeCount] = .{
-                        .nodeType = FSANodeTypes.State,
-                        .n = self.nodeCount,
-                    };
-                    const pathA = &self.nodes[self.nodeCount].?;
+            // Handle terminals
+            else {
 
-                    self.nodes[self.nodeCount+1] = .{
-                        .nodeType = FSANodeTypes.State,
-                        .n = self.nodeCount+1,
-                    };
-                    const pathB = &self.nodes[self.nodeCount+1].?;
-
-                    self.nodes[self.nodeCount+2] = .{
-                        .nodeType = FSANodeTypes.State,
-                        .n = self.nodeCount+2,
-                    };
-                    const newTerminal = &self.nodes[self.nodeCount+2].?;
-
-                    self.nodeCount += 3;
-                    if (astNode.extraInfo.option1) |optionA| {
-                        self.currentNode = pathA;
-                        self.generateFSA(optionA, pathA, newTerminal) catch |err| { return err; };
-                    }
-                    if (astNode.extraInfo.option2) |optionB| {
-                        self.currentNode = pathB;
-                        self.generateFSA(optionB, pathB, newTerminal) catch |err| { return err; };
-                    }
-                },
-                .OneOfRange => {
-                    self.nodes[self.nodeCount] = .{
-                        .nodeType = FSANodeTypes.State,
-                        .n = self.nodeCount,  
-                    };
-                    for (astNode.value) |ch| {
-                        self.currentNode.?.transitions[ch] = &self.nodes[self.nodeCount].?;
-                    }
-
-                    // Repeats
-                    const min: usize = @intCast(astNode.repeat.min);
-                    if (min == 0) {
-                        self.currentNode.?.transitions[epsilon] = &self.nodes[self.nodeCount].?;
-                    }
-                    else if (min > 1) {
-                        for (1..min) |_| {
-                            self.currentNode = &self.nodes[self.nodeCount].?;
-                            self.nodeCount += 1;
-
-                            self.nodes[self.nodeCount] = .{
-                                .nodeType = FSANodeTypes.State,
-                                .n = self.nodeCount,
-                            };
-                            for (astNode.value) |ch| {
-                                self.currentNode.?.transitions[ch] = &self.nodes[self.nodeCount].?;
-                            }
-                        }
-                    }
-                    if (astNode.repeat.max > min) {
-                        const max: usize = @intCast(astNode.repeat.max);
-                        for (min..max) |_| {
-                            self.currentNode = &self.nodes[self.nodeCount].?;
-                            self.nodeCount += 1;
-
-                            self.nodes[self.nodeCount] = .{
-                                .nodeType = FSANodeTypes.State,
-                                .n = self.nodeCount,
-                            };
-                            for (astNode.value) |ch| {
-                                self.currentNode.?.transitions[ch] = &self.nodes[self.nodeCount].?;
-                            }
-                        }
-                        for (1..max-min+1) |i| {
-                            self.nodes[self.nodeCount-i].?.transitions[epsilon] = &self.nodes[self.nodeCount].?;
-                        }
-                    }
-                    else {
-                        self.nodes[self.nodeCount].?.transitions[epsilon] = self.currentNode.?;
-                    }
-
-                    self.currentNode = &self.nodes[self.nodeCount].?;
-                    self.nodeCount += 1;
-                    if (astNode.next) |next| {
-                        self.generateFSA(next, entryNode, terminalNode) catch |err| { return err; };
-                    }
-                },
-                .Literal => {
-                    self.nodes[self.nodeCount] = .{
-                        .nodeType = FSANodeTypes.State,
-                        .n = self.nodeCount,
-                    };
-                    self.currentNode.?.transitions[astNode.value[0]] = &self.nodes[self.nodeCount].?;
-
-                    // Repeats
-                    const min: usize = @intCast(astNode.repeat.min);
-                    if (min == 0) {
-                        self.currentNode.?.transitions[epsilon] = &self.nodes[self.nodeCount].?;
-                    }
-                    else if (min > 1) {
-                        for (1..min) |_| {
-                            self.currentNode = &self.nodes[self.nodeCount].?;
-                            self.nodeCount += 1;
-
-                            self.nodes[self.nodeCount] = .{
-                                .nodeType = FSANodeTypes.State,
-                                .n = self.nodeCount,
-                            };
-                            self.currentNode.?.transitions[astNode.value[0]] = &self.nodes[self.nodeCount].?;
-                        }
-                    }
-                    if (astNode.repeat.max > min) {
-                        const max: usize = @intCast(astNode.repeat.max);
-                        for (min..max) |_| {
-                            self.currentNode = &self.nodes[self.nodeCount].?;
-                            self.nodeCount += 1;
-
-                            self.nodes[self.nodeCount] = .{
-                                .nodeType = FSANodeTypes.State,
-                                .n = self.nodeCount,
-                            };
-                            self.currentNode.?.transitions[astNode.value[0]] = &self.nodes[self.nodeCount].?;
-                        }
-                        for (1..max-min+1) |i| {
-                            self.nodes[self.nodeCount-i].?.transitions[epsilon] = &self.nodes[self.nodeCount].?;
-                        }
-                    }
-                    else {
-                        self.nodes[self.nodeCount].?.transitions[epsilon] = self.currentNode.?;
-                    }
-
-                    self.currentNode = &self.nodes[self.nodeCount].?;
-                    self.nodeCount += 1;
-                    if (astNode.next) |next| {
-                        self.generateFSA(next, entryNode, terminalNode) catch |err| { return err; };
-                    }
-                },
-                else => {
-                    return RegexError.FSAUnknownASTNodeType;
-                }
             }
         }
 

@@ -1,0 +1,300 @@
+fn generateFSA(self: *Self, astNode: *Regex().AST, entryNode: *Node, terminalNode: *Node) !void {
+            if (astNode.child == null and astNode.next == null) {
+                switch (astNode.nodeType) {
+                    .Literal => {
+                        self.nodes[self.nodeCount] = .{
+                            .nodeType = FSANodeTypes.State,
+                            .n = self.nodeCount,
+                        };
+
+                        // Repeats, revamped
+                        const min: usize = @intCast(astNode.repeat.min);
+                        if (min == 0) {
+                            self.currentNode.?.transitions[epsilon] = terminalNode;
+                        }
+                        else if (min > 1) {
+                            for (1..min) |_| {
+                                self.currentNode = &self.nodes[self.nodeCount].?;
+                                self.nodeCount += 1;
+
+                                self.nodes[self.nodeCount] = .{
+                                    .nodeType = FSANodeTypes.State,
+                                    .n = self.nodeCount,
+                                };
+                                self.currentNode.?.transitions[astNode.value[0]] = &self.nodes[self.nodeCount].?;
+                            }
+                        }
+                        if (astNode.repeat.max > min) {
+                            const max: usize = @intCast(astNode.repeat.max);
+                            for (min..max) |_| {
+                                self.currentNode = &self.nodes[self.nodeCount].?;
+                                self.nodeCount += 1;
+
+                                self.nodes[self.nodeCount] = .{
+                                    .nodeType = FSANodeTypes.State,
+                                    .n = self.nodeCount,
+                                };
+                                self.currentNode.?.transitions[astNode.value[0]] = &self.nodes[self.nodeCount].?;
+                            }
+                            self.currentNode = &self.nodes[self.nodeCount].?;
+                            self.currentNode.?.transitions[astNode.value[0]] = terminalNode;
+
+                            for (0..max-min) |i| {
+                                self.nodes[self.nodeCount-i].?.transitions[epsilon] = terminalNode;
+                            }
+                        }
+                        else {
+                            terminalNode.*.transitions[epsilon] = self.currentNode.?;
+                        }
+                        self.currentNode.?.transitions[astNode.value[0]] = terminalNode;
+                    },
+                    .OneOfRange => {
+                        self.nodes[self.nodeCount] = .{
+                            .nodeType = FSANodeTypes.State,
+                            .n = self.nodeCount,  
+                        };
+
+                        // Repeats
+                        const min: usize = @intCast(astNode.repeat.min);
+                        if (min == 0) {
+                            self.currentNode.?.transitions[epsilon] = &self.nodes[self.nodeCount].?;
+                        }
+                        else if (min > 1) {
+                            for (1..min) |_| {
+                                self.currentNode = &self.nodes[self.nodeCount].?;
+                                self.nodeCount += 1;
+
+                                self.nodes[self.nodeCount] = .{
+                                    .nodeType = FSANodeTypes.State,
+                                    .n = self.nodeCount,
+                                };
+                                for (astNode.value) |ch| {
+                                    self.currentNode.?.transitions[ch] = &self.nodes[self.nodeCount].?;
+                                }
+                            }
+                        }
+                        if (astNode.repeat.max > min) {
+                            const max: usize = @intCast(astNode.repeat.max);
+                            for (min..max) |_| {
+                                self.currentNode = &self.nodes[self.nodeCount].?;
+                                self.nodeCount += 1;
+
+                                self.nodes[self.nodeCount] = .{
+                                    .nodeType = FSANodeTypes.State,
+                                    .n = self.nodeCount,
+                                };
+                                for (astNode.value) |ch| {
+                                    self.currentNode.?.transitions[ch] = &self.nodes[self.nodeCount].?;
+                                }
+                            }
+                            for (0..max-min) |i| {
+                                self.nodes[self.nodeCount-i].?.transitions[epsilon] = terminalNode;
+                            }
+                        }
+                        else {
+                            terminalNode.transitions[epsilon] = self.currentNode.?;
+                        }
+
+                        for (astNode.value) |ch| {
+                            self.currentNode.?.transitions[ch] = &self.nodes[self.nodeCount].?;
+                        }
+                    },
+                    else => {
+                        self.currentNode.?.transitions[epsilon] = terminalNode;
+                    }
+                }
+                self.currentNode = terminalNode;
+                return;
+            }
+            switch (astNode.nodeType) {
+                .Expression => {
+                    self.nodes[self.nodeCount] = .{
+                        .nodeType = FSANodeTypes.State,
+                        .n = self.nodeCount,
+                    };
+                    self.currentNode.?.transitions[technicalMove] = &self.nodes[self.nodeCount].?;
+                    self.currentNode = &self.nodes[self.nodeCount].?;
+                    self.nodeCount += 1;
+                    if (astNode.next) |astNext| {
+                        self.generateFSA(astNext, entryNode, terminalNode) catch |err| { return err; };
+                    }
+                },
+                .Group => {
+                    const newEntry: Node = .{
+                        .nodeType = FSANodeTypes.State,
+                        .n = self.nodeCount,
+                    };
+                    const newTerminal: Node = .{
+                        .nodeType = FSANodeTypes.State,
+                        .n = self.nodeCount+1,
+                    };
+                    self.nodes[self.nodeCount] = newEntry;
+                    const newEntryPos = self.nodeCount;
+                    self.nodes[self.nodeCount+1] = newTerminal;
+                    const newTerminalPos = self.nodeCount + 1;
+                    self.currentNode.?.transitions[technicalMove] = &self.nodes[self.nodeCount].?;
+                    
+                    // Repeats
+                    if (astNode.repeat.min == 0) {
+                        self.nodes[self.nodeCount].?.transitions[epsilon] = &self.nodes[self.nodeCount+1].?;
+                    }
+                    if (astNode.repeat.max == -1) {
+                        self.nodes[self.nodeCount+1].?.transitions[epsilon] = &self.nodes[self.nodeCount].?;
+                    }
+                    
+                    self.currentNode = &self.nodes[self.nodeCount].?;
+                    self.nodeCount += 2;
+                    if (astNode.child) |child| {
+                        self.generateFSA(child, &self.nodes[newEntryPos].?, &self.nodes[newTerminalPos].?) catch |err| { return err; };
+                    }
+                    self.nodes[self.nodeCount] = .{
+                        .nodeType = FSANodeTypes.State,
+                        .n = self.nodeCount,
+                    };
+                    self.nodes[newTerminalPos].?.transitions[technicalMove] = &self.nodes[self.nodeCount].?;
+                    self.currentNode = &self.nodes[self.nodeCount].?;
+                    self.nodeCount += 1;
+                    if (astNode.next) |next| {
+                        self.generateFSA(next, entryNode, terminalNode) catch |err| { return err; };
+                    }
+                },
+                .Alternation => {
+                    self.nodes[self.nodeCount] = .{
+                        .nodeType = FSANodeTypes.State,
+                        .n = self.nodeCount,
+                    };
+                    const pathA = &self.nodes[self.nodeCount].?;
+
+                    self.nodes[self.nodeCount+1] = .{
+                        .nodeType = FSANodeTypes.State,
+                        .n = self.nodeCount+1,
+                    };
+                    const pathB = &self.nodes[self.nodeCount+1].?;
+
+                    self.nodes[self.nodeCount+2] = .{
+                        .nodeType = FSANodeTypes.State,
+                        .n = self.nodeCount+2,
+                    };
+                    const newTerminal = &self.nodes[self.nodeCount+2].?;
+
+                    self.nodeCount += 3;
+                    if (astNode.extraInfo.option1) |optionA| {
+                        self.currentNode = pathA;
+                        self.generateFSA(optionA, pathA, newTerminal) catch |err| { return err; };
+                    }
+                    if (astNode.extraInfo.option2) |optionB| {
+                        self.currentNode = pathB;
+                        self.generateFSA(optionB, pathB, newTerminal) catch |err| { return err; };
+                    }
+                },
+                .OneOfRange => {
+                    self.nodes[self.nodeCount] = .{
+                        .nodeType = FSANodeTypes.State,
+                        .n = self.nodeCount,  
+                    };
+                    for (astNode.value) |ch| {
+                        self.currentNode.?.transitions[ch] = &self.nodes[self.nodeCount].?;
+                    }
+
+                    // Repeats
+                    const min: usize = @intCast(astNode.repeat.min);
+                    if (min == 0) {
+                        self.currentNode.?.transitions[epsilon] = &self.nodes[self.nodeCount].?;
+                    }
+                    else if (min > 1) {
+                        for (1..min) |_| {
+                            self.currentNode = &self.nodes[self.nodeCount].?;
+                            self.nodeCount += 1;
+
+                            self.nodes[self.nodeCount] = .{
+                                .nodeType = FSANodeTypes.State,
+                                .n = self.nodeCount,
+                            };
+                            for (astNode.value) |ch| {
+                                self.currentNode.?.transitions[ch] = &self.nodes[self.nodeCount].?;
+                            }
+                        }
+                    }
+                    if (astNode.repeat.max > min) {
+                        const max: usize = @intCast(astNode.repeat.max);
+                        for (min..max) |_| {
+                            self.currentNode = &self.nodes[self.nodeCount].?;
+                            self.nodeCount += 1;
+
+                            self.nodes[self.nodeCount] = .{
+                                .nodeType = FSANodeTypes.State,
+                                .n = self.nodeCount,
+                            };
+                            for (astNode.value) |ch| {
+                                self.currentNode.?.transitions[ch] = &self.nodes[self.nodeCount].?;
+                            }
+                        }
+                        for (1..max-min+1) |i| {
+                            self.nodes[self.nodeCount-i].?.transitions[epsilon] = &self.nodes[self.nodeCount].?;
+                        }
+                    }
+                    else {
+                        self.nodes[self.nodeCount].?.transitions[epsilon] = self.currentNode.?;
+                    }
+
+                    self.currentNode = &self.nodes[self.nodeCount].?;
+                    self.nodeCount += 1;
+                    if (astNode.next) |next| {
+                        self.generateFSA(next, entryNode, terminalNode) catch |err| { return err; };
+                    }
+                },
+                .Literal => {
+                    self.nodes[self.nodeCount] = .{
+                        .nodeType = FSANodeTypes.State,
+                        .n = self.nodeCount,
+                    };
+                    self.currentNode.?.transitions[astNode.value[0]] = &self.nodes[self.nodeCount].?;
+
+                    // Repeats
+                    const min: usize = @intCast(astNode.repeat.min);
+                    if (min == 0) {
+                        self.currentNode.?.transitions[epsilon] = &self.nodes[self.nodeCount].?;
+                    }
+                    else if (min > 1) {
+                        for (1..min) |_| {
+                            self.currentNode = &self.nodes[self.nodeCount].?;
+                            self.nodeCount += 1;
+
+                            self.nodes[self.nodeCount] = .{
+                                .nodeType = FSANodeTypes.State,
+                                .n = self.nodeCount,
+                            };
+                            self.currentNode.?.transitions[astNode.value[0]] = &self.nodes[self.nodeCount].?;
+                        }
+                    }
+                    if (astNode.repeat.max > min) {
+                        const max: usize = @intCast(astNode.repeat.max);
+                        for (min..max) |_| {
+                            self.currentNode = &self.nodes[self.nodeCount].?;
+                            self.nodeCount += 1;
+
+                            self.nodes[self.nodeCount] = .{
+                                .nodeType = FSANodeTypes.State,
+                                .n = self.nodeCount,
+                            };
+                            self.currentNode.?.transitions[astNode.value[0]] = &self.nodes[self.nodeCount].?;
+                        }
+                        for (1..max-min+1) |i| {
+                            self.nodes[self.nodeCount-i].?.transitions[epsilon] = &self.nodes[self.nodeCount].?;
+                        }
+                    }
+                    else {
+                        self.nodes[self.nodeCount].?.transitions[epsilon] = self.currentNode.?;
+                    }
+
+                    self.currentNode = &self.nodes[self.nodeCount].?;
+                    self.nodeCount += 1;
+                    if (astNode.next) |next| {
+                        self.generateFSA(next, entryNode, terminalNode) catch |err| { return err; };
+                    }
+                },
+                else => {
+                    return RegexError.FSAUnknownASTNodeType;
+                }
+            }
+        }
