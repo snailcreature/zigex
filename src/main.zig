@@ -543,8 +543,207 @@ pub fn FSA() type {
         /// to current and next node, rather than previous parameters.
         fn generateFSA(self: *Self, astNode: *Regex().AST, entryNode: *Node, terminalNode: *Node) !void {
             // Each new node increases self.nodeCount by 1
+            // Handle terminals
+            if (astNode.child == null and astNode.next == null) {
+                switch (astNode.nodeType) {
+                    // Handle Expressions
+                    .Expression => {
+                        // Transition from currentNode to Terminal on epsilon
+                        self.currentNode.?.transitions[epsilon] = terminalNode;
+                        self.currentNode = terminalNode;
+                    },
+                    // Handle Literals
+                    .Literal => {
+                        // Get minimum and maximum occurances
+                        const min: usize = @intCast(astNode.repeat.min);
+                        const max: usize = @intCast(@max(astNode.repeat.max, 0));
+                        // If minimum > 0, create up to minimum-1 identical nodes
+                        var x: usize = 0;
+                        if (min > 0) {
+                            self.nodes[self.nodeCount] = .{
+                                .nodeType = FSANodeTypes.State,
+                                .n = self.nodeCount,
+                            };
+                            self.currentNode.?.transitions[astNode.value[0]] = &self.nodes[self.nodeCount].?;
+                            x += 1;
+                            for (1..(if (min > 1) min else 2)-1) |i| {
+                                self.nodes[self.nodeCount + i] = .{
+                                    .nodeType = FSANodeTypes.State,
+                                    .n = self.nodeCount + i,
+                                };
+                                self.nodes[self.nodeCount + i - 1].?.transitions[astNode.value[0]] = &self.nodes[self.nodeCount + i].?;
+                                x += 1;
+                            }
+                        }
+                        // If maximum > minimum, create a futher maximum-minimum identical nodes
+                        var y: usize = 0;
+                        if (max > min) {
+                            for (0..max-(if (min > 1) min else 1) - 1) |i| {
+                                self.nodes[self.nodeCount + i + x] = .{
+                                    .nodeType = FSANodeTypes.State,
+                                    .n = self.nodeCount + i + x,
+                                };
+                                self.nodes[self.nodeCount + i + x - 1].?.transitions[astNode.value[0]] = &self.nodes[self.nodeCount + i + x].?;
+                                y += 1;
+                            }
+                            self.nodes[self.nodeCount + y + x - 1].?.transitions[astNode.value[0]] = terminalNode;
+                            y += 1;
+                            // For each of these nodes, connect all to terminalNode via epsilon
+                            for (1..y+1) |i| {
+                                self.nodes[self.nodeCount + x + y - i].?.transitions[epsilon] = terminalNode;
+                            }
+                        }
+                        // Else if maximum < minimum (unlimited), link terminal to second-to-last via epsilon
+                        else if (astNode.repeat.max < min) {
+                            terminalNode.transitions[epsilon] = &self.nodes[self.nodeCount + y + x - 1].?;
+                            self.nodes[self.nodeCount + y + x - 1].?.transitions[astNode.value[0]] = terminalNode;
+                        }
+                        // If minimum == 0, link first to terminal via epsilon
+                        if (min == 0) {
+                            self.currentNode.?.transitions[epsilon] = terminalNode;
+                        }
+                        // Move to terminal
+                        self.nodeCount += x + y;
+                        self.currentNode = terminalNode;
+                    },
+                    // Handle OneOfRanges
+                    .OneOfRange => {
+                        // Get minimum and maximum occurances
+                        const min: usize = @intCast(astNode.repeat.min);
+                        const max: usize = @intCast(astNode.repeat.max);
+                        // If minimum > 0, create up to minimum-1 identical nodes
+                        var x: usize = 0;
+                        if (min > 0) {
+                            self.nodes[self.nodeCount] = .{
+                                .nodeType = FSANodeTypes.State,
+                                .n = self.nodeCount,
+                            };
+                            for (astNode.value) |ch| {
+                                self.currentNode.?.transitions[ch] = &self.nodes[self.nodeCount].?;
+                            }
+                            x += 1;
+                            for (1..(if (min>1) min else 2)-1) |i| {
+                                self.nodes[self.nodeCount + i] = .{
+                                    .nodeType = FSANodeTypes.State,
+                                    .n = self.nodeCount + i,
+                                };
+                                for (astNode.value) |ch| {
+                                    self.nodes[self.nodeCount + i - 1].?.transitions[ch] = &self.nodes[self.nodeCount + i].?;
+                                }
+                                x += 1;
+                            }
+                        }
+                        // If maximum > minimum, create a futher maximum-minimum identical nodes
+                        var y: usize = 0;
+                        if (max > min) {
+                            for (0..max-min-1) |i| {
+                                self.nodes[self.nodeCount + i + x] = .{
+                                    .nodeType = FSANodeTypes.State,
+                                    .n = self.nodeCount + i + x,
+                                };
+                                for (astNode.value) |ch| {
+                                    self.nodes[self.nodeCount + i + x - 1].?.transitions[ch] = &self.nodes[self.nodeCount + i + x].?;
+                                }
+                                y += 1;
+                            }
+                            for (astNode.value) |ch| {
+                                self.nodes[self.nodeCount + y + x - 1].?.transitions[ch] = terminalNode;
+                            }
+                            y += 1;
+                            // For each of these nodes, connect all to terminalNode via epsilon
+                            for (1..y+1) |i| {
+                                self.nodes[self.nodeCount + x + y - i].?.transitions[epsilon] = terminalNode;
+                            }
+                        }
+                        // Else if maximum < minimum (unlimited), link terminal to second-to-last via epsilon
+                        else if (astNode.repeat.max < min) {
+                            terminalNode.transitions[epsilon] = &self.nodes[self.nodeCount + y + x - 1].?;
+                            for (astNode.value) |ch| {
+                                self.nodes[self.nodeCount + y + x - 1].?.transitions[ch] = terminalNode;
+                            }
+                        }
+                        // If minimum == 0, link first to terminal via epsilon
+                        if (min == 0) {
+                            self.currentNode.?.transitions[epsilon] = terminalNode;
+                        }
+                        // Move to terminal
+                        self.nodeCount += x + y;
+                        self.currentNode = terminalNode;
+                    },
+                    // Handle Groups
+                    .Group => {
+                        // Get minimum and maximum repeats
+                        const min: usize = @intCast(astNode.repeat.min);
+                        const max: usize = @intCast(astNode.repeat.max);
+                        // If minimum > 0, create up to minimum-1 extra newTerminalN nodes
+                        var x: usize = 0;
+                        if (min > 0) {
+                            self.nodes[self.nodeCount] = .{
+                                .nodeType = FSANodeTypes.State,
+                                .n = self.nodeCount,
+                            };
+                            x += 1;
+                            for (1..min-1) |i| {
+                                self.nodes[self.nodeCount + i] = .{
+                                    .nodeType = FSANodeTypes.State,
+                                    .n = self.nodeCount + i,
+                                };
+                                x += 1;
+                            }
+                        }
+                        // If maximum > minimum, create a further maximum-minimum newTerminalN nodes
+                        var y: usize = 0;
+                        if (max > min) {
+                            for (0..max-min-1) |i| {
+                                self.nodes[self.nodeCount + i + x] = .{
+                                    .nodeType = FSANodeTypes.State,
+                                    .n = self.nodeCount + i + x,
+                                };
+                                y += 1;
+                            }
+                            y += 1;
+                            // For each of these nodes, connect all to terminalNode via epsilon
+                            for (1..y+1) |i| {
+                                self.nodes[self.nodeCount + x + y - i].?.transitions[epsilon] = terminalNode;
+                            }
+                        }
+                        // Else if maximum < minimum (unlimited), link terminal to newTerminal(N-1)
+                        else if (astNode.repeat.max < min) {
+                            terminalNode.transitions[epsilon] = &self.nodes[self.nodeCount + y + x - 1].?;
+                        }
+                        // If minimum == 0, link newTerminal1 to terminal via epsilon
+                        if (min == 0) {
+                            self.currentNode.?.transitions[epsilon] = terminalNode;
+                        }
+                        // For each pair of newTerminal (N, N+1), run generateFSA with newTerminalN and newTerminalN+1
+                        const storeCount = self.nodeCount;
+                        self.nodeCount += 1 + x + y;
+                        self.generateFSA(astNode.child.?, self.currentNode.?, &self.nodes[storeCount].?) catch |err| { return err; };
+                        for (storeCount..storeCount+x+y) |i| {
+                            self.currentNode = &self.nodes[i].?;
+                            self.generateFSA(astNode.child.?, self.currentNode.?, &self.nodes[storeCount+1].?) catch |err| { return err; };
+                        }
+                        self.generateFSA(astNode.child.?, &self.nodes[storeCount+x+y].?, terminalNode) catch |err| { return err; };
+                        // Move to terminal
+                        self.currentNode = terminalNode;
+                    },
+                    // Handle Alternations
+                    .Alternation => {
+                        // Store currentNode as newEntry
+                        const newEntry = self.currentNode;
+                        // Generate branch for optionA using newEntry and terminal
+                        self.currentNode = newEntry;
+                        self.generateFSA(astNode.extraInfo.option1.?, newEntry.?, terminalNode) catch |err| { return err; };
+                        // Generate branch for optionB using newEntry and terminal
+                        self.currentNode = newEntry;
+                        self.generateFSA(astNode.extraInfo.option2.?, newEntry.?, terminalNode) catch |err| { return err; };
+                        // Move to terminal
+                    },
+                    else => { unreachable; },
+                }
+            }
             // Handle non-terminals
-            if (astNode.child != null and astNode.next != null) {
+            else {
                 switch (astNode.nodeType) {
                     // Handle Expressions
                     .Expression => {
@@ -556,7 +755,7 @@ pub fn FSA() type {
 
                         // Technical transition onto new node
                         self.currentNode.?.transitions[technicalMove] = &self.nodes[self.nodeCount].?;
-                        self.currentNode = self.nodes[self.nodeCount].?;
+                        self.currentNode = &self.nodes[self.nodeCount].?;
                         self.nodeCount += 1;
                         self.generateFSA(astNode.next.?, entryNode, terminalNode) catch |err| { return err; };
                     },
@@ -564,7 +763,7 @@ pub fn FSA() type {
                     .Literal => {
                         // Get minimum and maximum repeats
                         const min: usize = @intCast(astNode.repeat.min);
-                        const max: usize = @intCast(astNode.repeat.max);
+                        const max: usize = @intCast(@max(astNode.repeat.max, 0));
                         // Create one node, transitioning on literal
                         self.nodes[self.nodeCount] = .{
                             .nodeType = FSANodeTypes.State,
@@ -580,7 +779,7 @@ pub fn FSA() type {
                                     .n = self.nodeCount + i,
                                 };
                                 self.nodes[self.nodeCount + i - 1].?.transitions[astNode.value[0]] = &self.nodes[self.nodeCount + i].?;
-                                x += 1;
+                                x =i;
                             }
                         }
                         // If maximum > minimum, create a futher maximum-minimum identical nodes
@@ -592,7 +791,7 @@ pub fn FSA() type {
                                     .n = self.nodeCount + i + x,
                                 };
                                 self.nodes[self.nodeCount + i + x - 1].?.transitions[astNode.value[0]] = &self.nodes[self.nodeCount + i + x].?;
-                                y += 1;
+                                y = i;
                             }
                             // For each of these nodes, connect all to the last via epsilon
                             for (1..y+1) |i| {
@@ -680,8 +879,7 @@ pub fn FSA() type {
                             .nodeType = FSANodeTypes.State,
                             .n = self.nodeCount,
                         };
-                        const newTerminal1 = &self.nodes[self.nodeCount].?;
-                        // if minimum > 0, create up to minimum-1 extra newTerminalN nodesvar x: usize = 0;
+                        // if minimum > 0, create up to minimum-1 extra newTerminalN nodes
                         var x: usize = 0;
                         if (min > 0) {
                             for (1..min) |i| {
@@ -716,25 +914,20 @@ pub fn FSA() type {
                             self.currentNode.?.transitions[epsilon] = &self.nodes[self.nodeCount + x + y].?;
                         }
                         // For each pair of newTerminal (N, N+1), run generateFSA with newTerminalN and newTerminalN+1
+                        const storeCount = self.nodeCount;
                         self.nodeCount += 1 + x + y;
-                        const groupPairs: []*Node = .{self.currentNode.?, newTerminal1} ++ self.nodes[self.nodeCount..self.nodeCount+x+y+1];
-                        for (groupPairs[0..], groupPairs[1..]) |n, n1| {
-                            if (n != null and n1 != null) {
-                                self.currentNode = n;
-                                self.generateFSA(astNode.child.?, n, n1);
-                            }
+                        self.generateFSA(astNode.child.?, self.currentNode.?, &self.nodes[storeCount].?) catch |err| { return err; };
+                        for (storeCount..storeCount+x+y) |i| {
+                            self.currentNode = &self.nodes[i].?;
+                            self.generateFSA(astNode.child.?, self.currentNode.?, &self.nodes[storeCount+1].?) catch |err| { return err; };
                         }
                         // Move to final newTerminal
-                        self.currentNode = &self.nodes[self.currentNode + x + y].?;
+                        self.currentNode = &self.nodes[storeCount + x + y].?;
                     },
                     // Handle Alternations
                     .Alternation => {
                         // Create two new nodes, newEntry and newTerminal
-                        self.nodes[self.nodeCount] = .{
-                            .nodeType = FSANodeTypes.State,
-                            .n = self.nodeCount,
-                        };
-                        const newEntry = &self.nodes[self.nodeCount].?;
+                        const newEntry = self.currentNode;
                         self.nodes[self.nodeCount+1] = .{
                             .nodeType = FSANodeTypes.State,
                             .n = self.nodeCount+1,
@@ -743,19 +936,15 @@ pub fn FSA() type {
                         self.nodeCount += 2;
                         // Generate branch for optionA using newEntry and newTerminal
                         self.currentNode = newEntry;
-                        self.generateFSA(astNode.extraInfo.option1.?, newEntry, newTerminal);
+                        self.generateFSA(astNode.extraInfo.option1.?, newEntry.?, newTerminal) catch |err| { return err; };
                         // Generate branch for optionB using newEntry and newTerminal
                         self.currentNode = newEntry;
-                        self.generateFSA(astNode.extraInfo.option2.?, newEntry, newTerminal);
+                        self.generateFSA(astNode.extraInfo.option2.?, newEntry.?, newTerminal) catch |err| { return err; };
                         // Move to newTerminal
                         self.currentNode = newTerminal;
                     },
                     else => { unreachable; }
                 }
-            }
-            // Handle terminals
-            else {
-
             }
         }
 
