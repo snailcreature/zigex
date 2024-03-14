@@ -476,7 +476,7 @@ pub fn FSA() type {
         /// The AST to work through.
         ast: *Regex().AST,
         /// Memory for Nodes.
-        nodes: [256]?Node = .{ .{ .nodeType = FSANodeTypes.Entry, } } ++ .{null} ** 254 ++ .{ .{ .nodeType = FSANodeTypes.Terminal, } },
+        nodes: [256]?Node = .{ .{ .nodeType = FSANodeTypes.Entry, .n = 0, } } ++ .{null} ** 254 ++ .{ .{ .nodeType = FSANodeTypes.Terminal, .n = 255 } },
         /// Number of nodes currently stored.
         nodeCount: usize = 1,
         /// ArrayList containing matched transitions.
@@ -486,6 +486,7 @@ pub fn FSA() type {
         const Node = struct {
             nodeType: FSANodeTypes,
             transitions: [256]?*Node = .{null} ** 256,
+            n: usize,
         };
 
         pub fn init(ast: *Regex().AST, allocator: std.mem.Allocator) !Self {
@@ -546,15 +547,99 @@ pub fn FSA() type {
                     .Literal => {
                         self.nodes[self.nodeCount] = .{
                             .nodeType = FSANodeTypes.State,
+                            .n = self.nodeCount,
                         };
-                        self.currentNode.?.transitions[astNode.value[0]] = terminalNode;
 
-                        // Repeats
-                        if (astNode.repeat.min == 0) {
+                        // Repeats, revamped
+                        const min: usize = @intCast(astNode.repeat.min);
+                        if (min == 0) {
                             self.currentNode.?.transitions[epsilon] = terminalNode;
                         }
-                        if (astNode.repeat.max == -1) {
+                        else if (min > 1) {
+                            for (1..min) |_| {
+                                self.currentNode = &self.nodes[self.nodeCount].?;
+                                self.nodeCount += 1;
+
+                                self.nodes[self.nodeCount] = .{
+                                    .nodeType = FSANodeTypes.State,
+                                    .n = self.nodeCount,
+                                };
+                                self.currentNode.?.transitions[astNode.value[0]] = &self.nodes[self.nodeCount].?;
+                            }
+                        }
+                        if (astNode.repeat.max > min) {
+                            const max: usize = @intCast(astNode.repeat.max);
+                            for (min..max) |_| {
+                                self.currentNode = &self.nodes[self.nodeCount].?;
+                                self.nodeCount += 1;
+
+                                self.nodes[self.nodeCount] = .{
+                                    .nodeType = FSANodeTypes.State,
+                                    .n = self.nodeCount,
+                                };
+                                self.currentNode.?.transitions[astNode.value[0]] = &self.nodes[self.nodeCount].?;
+                            }
+                            self.currentNode = &self.nodes[self.nodeCount].?;
+                            self.currentNode.?.transitions[astNode.value[0]] = terminalNode;
+
+                            for (0..max-min) |i| {
+                                self.nodes[self.nodeCount-i].?.transitions[epsilon] = terminalNode;
+                            }
+                        }
+                        else {
                             terminalNode.*.transitions[epsilon] = self.currentNode.?;
+                        }
+                        self.currentNode.?.transitions[astNode.value[0]] = terminalNode;
+                    },
+                    .OneOfRange => {
+                        self.nodes[self.nodeCount] = .{
+                            .nodeType = FSANodeTypes.State,
+                            .n = self.nodeCount,  
+                        };
+
+                        // Repeats
+                        const min: usize = @intCast(astNode.repeat.min);
+                        if (min == 0) {
+                            self.currentNode.?.transitions[epsilon] = &self.nodes[self.nodeCount].?;
+                        }
+                        else if (min > 1) {
+                            for (1..min) |_| {
+                                self.currentNode = &self.nodes[self.nodeCount].?;
+                                self.nodeCount += 1;
+
+                                self.nodes[self.nodeCount] = .{
+                                    .nodeType = FSANodeTypes.State,
+                                    .n = self.nodeCount,
+                                };
+                                for (astNode.value) |ch| {
+                                    self.currentNode.?.transitions[ch] = &self.nodes[self.nodeCount].?;
+                                }
+                            }
+                        }
+                        if (astNode.repeat.max > min) {
+                            const max: usize = @intCast(astNode.repeat.max);
+                            for (min..max) |_| {
+                                self.currentNode = &self.nodes[self.nodeCount].?;
+                                self.nodeCount += 1;
+
+                                self.nodes[self.nodeCount] = .{
+                                    .nodeType = FSANodeTypes.State,
+                                    .n = self.nodeCount,
+                                };
+                                for (astNode.value) |ch| {
+                                    self.currentNode.?.transitions[ch] = &self.nodes[self.nodeCount].?;
+                                }
+                            }
+                            for (0..max-min) |i| {
+                                self.nodes[self.nodeCount-i].?.transitions[epsilon] = terminalNode;
+                            }
+                        }
+                        else {
+                            terminalNode.transitions[epsilon] = self.currentNode.?;
+                        }
+
+                        for (astNode.value) |ch| {
+                            self.currentNode.?.transitions[ch] = &self.nodes[self.nodeCount].?;
                         }
                     },
                     else => {
@@ -568,6 +653,7 @@ pub fn FSA() type {
                 .Expression => {
                     self.nodes[self.nodeCount] = .{
                         .nodeType = FSANodeTypes.State,
+                        .n = self.nodeCount,
                     };
                     self.currentNode.?.transitions[technicalMove] = &self.nodes[self.nodeCount].?;
                     self.currentNode = &self.nodes[self.nodeCount].?;
@@ -579,9 +665,11 @@ pub fn FSA() type {
                 .Group => {
                     const newEntry: Node = .{
                         .nodeType = FSANodeTypes.State,
+                        .n = self.nodeCount,
                     };
                     const newTerminal: Node = .{
                         .nodeType = FSANodeTypes.State,
+                        .n = self.nodeCount+1,
                     };
                     self.nodes[self.nodeCount] = newEntry;
                     const newEntryPos = self.nodeCount;
@@ -604,6 +692,7 @@ pub fn FSA() type {
                     }
                     self.nodes[self.nodeCount] = .{
                         .nodeType = FSANodeTypes.State,
+                        .n = self.nodeCount,
                     };
                     self.nodes[newTerminalPos].?.transitions[technicalMove] = &self.nodes[self.nodeCount].?;
                     self.currentNode = &self.nodes[self.nodeCount].?;
@@ -615,16 +704,19 @@ pub fn FSA() type {
                 .Alternation => {
                     self.nodes[self.nodeCount] = .{
                         .nodeType = FSANodeTypes.State,
+                        .n = self.nodeCount,
                     };
                     const pathA = &self.nodes[self.nodeCount].?;
 
                     self.nodes[self.nodeCount+1] = .{
                         .nodeType = FSANodeTypes.State,
+                        .n = self.nodeCount+1,
                     };
                     const pathB = &self.nodes[self.nodeCount+1].?;
 
                     self.nodes[self.nodeCount+2] = .{
                         .nodeType = FSANodeTypes.State,
+                        .n = self.nodeCount+2,
                     };
                     const newTerminal = &self.nodes[self.nodeCount+2].?;
 
@@ -640,17 +732,51 @@ pub fn FSA() type {
                 },
                 .OneOfRange => {
                     self.nodes[self.nodeCount] = .{
-                        .nodeType = FSANodeTypes.State,  
+                        .nodeType = FSANodeTypes.State,
+                        .n = self.nodeCount,  
                     };
                     for (astNode.value) |ch| {
                         self.currentNode.?.transitions[ch] = &self.nodes[self.nodeCount].?;
                     }
 
                     // Repeats
-                    if (astNode.repeat.min == 0) {
+                    const min: usize = @intCast(astNode.repeat.min);
+                    if (min == 0) {
                         self.currentNode.?.transitions[epsilon] = &self.nodes[self.nodeCount].?;
                     }
-                    if (astNode.repeat.max == -1) {
+                    else if (min > 1) {
+                        for (1..min) |_| {
+                            self.currentNode = &self.nodes[self.nodeCount].?;
+                            self.nodeCount += 1;
+
+                            self.nodes[self.nodeCount] = .{
+                                .nodeType = FSANodeTypes.State,
+                                .n = self.nodeCount,
+                            };
+                            for (astNode.value) |ch| {
+                                self.currentNode.?.transitions[ch] = &self.nodes[self.nodeCount].?;
+                            }
+                        }
+                    }
+                    if (astNode.repeat.max > min) {
+                        const max: usize = @intCast(astNode.repeat.max);
+                        for (min..max) |_| {
+                            self.currentNode = &self.nodes[self.nodeCount].?;
+                            self.nodeCount += 1;
+
+                            self.nodes[self.nodeCount] = .{
+                                .nodeType = FSANodeTypes.State,
+                                .n = self.nodeCount,
+                            };
+                            for (astNode.value) |ch| {
+                                self.currentNode.?.transitions[ch] = &self.nodes[self.nodeCount].?;
+                            }
+                        }
+                        for (1..max-min+1) |i| {
+                            self.nodes[self.nodeCount-i].?.transitions[epsilon] = &self.nodes[self.nodeCount].?;
+                        }
+                    }
+                    else {
                         self.nodes[self.nodeCount].?.transitions[epsilon] = self.currentNode.?;
                     }
 
@@ -663,14 +789,44 @@ pub fn FSA() type {
                 .Literal => {
                     self.nodes[self.nodeCount] = .{
                         .nodeType = FSANodeTypes.State,
+                        .n = self.nodeCount,
                     };
                     self.currentNode.?.transitions[astNode.value[0]] = &self.nodes[self.nodeCount].?;
 
                     // Repeats
-                    if (astNode.repeat.min == 0) {
+                    const min: usize = @intCast(astNode.repeat.min);
+                    if (min == 0) {
                         self.currentNode.?.transitions[epsilon] = &self.nodes[self.nodeCount].?;
                     }
-                    if (astNode.repeat.max == -1) {
+                    else if (min > 1) {
+                        for (1..min) |_| {
+                            self.currentNode = &self.nodes[self.nodeCount].?;
+                            self.nodeCount += 1;
+
+                            self.nodes[self.nodeCount] = .{
+                                .nodeType = FSANodeTypes.State,
+                                .n = self.nodeCount,
+                            };
+                            self.currentNode.?.transitions[astNode.value[0]] = &self.nodes[self.nodeCount].?;
+                        }
+                    }
+                    if (astNode.repeat.max > min) {
+                        const max: usize = @intCast(astNode.repeat.max);
+                        for (min..max) |_| {
+                            self.currentNode = &self.nodes[self.nodeCount].?;
+                            self.nodeCount += 1;
+
+                            self.nodes[self.nodeCount] = .{
+                                .nodeType = FSANodeTypes.State,
+                                .n = self.nodeCount,
+                            };
+                            self.currentNode.?.transitions[astNode.value[0]] = &self.nodes[self.nodeCount].?;
+                        }
+                        for (1..max-min+1) |i| {
+                            self.nodes[self.nodeCount-i].?.transitions[epsilon] = &self.nodes[self.nodeCount].?;
+                        }
+                    }
+                    else {
                         self.nodes[self.nodeCount].?.transitions[epsilon] = self.currentNode.?;
                     }
 
@@ -691,32 +847,38 @@ pub fn FSA() type {
             const currentNode = self.currentNode.?;
             // If the terminal has been reached, return the result
             if (self.currentNode.?.nodeType == FSANodeTypes.Terminal) {
+                std.debug.print("{x}: Reached Terminal! Reversing...\n", .{currentNode.n});
                 return self.matchStack.toOwnedSlice() catch |err| { return err; };
             }
             // If the end of the string is reached, return null
             if (input.len <= 0) {
+                std.debug.print("{x}: Consumed string. Reversing...\n", .{currentNode.n});
                 return null;
             }
             // If there is a character transition, do it
             if (self.currentNode.?.transitions[input[0]]) |transition| {
                 self.matchStack.append(input[0]) catch |err| { return err; };
                 self.currentNode = transition;
+                std.debug.print("{x}: Transition: {c}\n", .{currentNode.n, input[0]});
                 return self.traverse(input[1..]) catch |err| { return err; };
             }
             // If there is an epsilon transition, do it
             self.currentNode = currentNode;
             if (self.currentNode.?.transitions[epsilon]) |transition| {
                 self.currentNode = transition;
+                std.debug.print("{x}: Transition: epsilon\n", .{currentNode.n});
                 return self.traverse(input) catch |err| { return err; };
             }
             // If there is a technical transition do it
             if (self.currentNode.?.transitions[technicalMove]) |transition| {
                 self.currentNode = transition;
+                std.debug.print("{x}: Transition: technical\t{s}\n", .{currentNode.n, input});
                 return self.traverse(input) catch |err| { return err; };
             }
             // If there none of this works, attempt a backtrack
             _ = self.matchStack.popOrNull();
             self.currentNode = self.entryNode.?;
+            std.debug.print("{x}: Backtracking...\n", .{currentNode.n});
             return self.traverse(input[1..]);
             // If backtracking fails, return null
             // return null;
@@ -763,11 +925,46 @@ test "Attempt match on \"bc\"" {
     defer re.deinit();
     try std.testing.expect(re.match("bc"));
 }
+test "Attempt match on \"bbb\" infinite b's" {
+    var re = Regex().init("ab+", regexAllocator, fsmAllocator) catch |err| { return err; };
+    defer re.deinit();
+    std.debug.print("\n\n", .{});
+    try std.testing.expect(re.match("abbb"));
+}
+test "Attempt match on \"bbb\" 0 or infinite b's" {
+    var re = Regex().init("ab*c", regexAllocator, fsmAllocator) catch |err| { return err; };
+    defer re.deinit();
+    std.debug.print("\n\n", .{});
+    try std.testing.expect(re.match("abbbc"));
+}
+test "Attempt match on \"bbb\" two or more b's" {
+    var re = Regex().init("ab{2,}c", regexAllocator, fsmAllocator) catch |err| { return err; };
+    defer re.deinit();
+    std.debug.print("\n\n", .{});
+    try std.testing.expect(re.match("abbbc"));
+}
+test "Attempt match on \"bbb\" two b's" {
+    var re = Regex().init("ab{2}c", regexAllocator, fsmAllocator) catch |err| { return err; };
+    defer re.deinit();
+    std.debug.print("\n\n", .{});
+    try std.testing.expect(re.match("abbc"));
+}
+test "Attempt match on \"bbb\"" {
+    var re = Regex().init("ab{2,5}c", regexAllocator, fsmAllocator) catch |err| { return err; };
+    defer re.deinit();
+    std.debug.print("\n\n", .{});
+    try std.testing.expect(re.match("abbbc"));
+}
+test "Attempt match on \"b\" any letter" {
+    var re = Regex().init("\\l", regexAllocator, fsmAllocator) catch |err| { return err; };
+    defer re.deinit();
+    std.debug.print("\n\n", .{});
+    try std.testing.expect(re.match("bbb"));
+}
 test "Attempt matchFirst on \"world\" in string" {
     var re = try Regex().init("world", regexAllocator, fsmAllocator);
     defer re.deinit();
     const result = re.matchFirst("Hello, world!");
-    std.debug.print("\n\n{?s}\n\n", .{result});
     if (result) |res| {
         try std.testing.expectEqualStrings("world", res);
     }
@@ -779,7 +976,6 @@ test "Attempt matchFirst on \"world\"" {
     var re = try Regex().init("world", regexAllocator, fsmAllocator);
     defer re.deinit();
     const result = re.matchFirst("world");
-    std.debug.print("\n\n{?s}\n\n", .{result});
     if (result) |res| {
         try std.testing.expectEqualStrings("world", res);
     }
@@ -791,7 +987,6 @@ test "Attempt matchFirst on \"world\" embedded in string" {
     var re = try Regex().init("world", regexAllocator, fsmAllocator);
     defer re.deinit();
     const result = re.matchFirst("Wow! Hello, world!");
-    std.debug.print("\n\n{?s}\n\n", .{result});
     if (result) |res| {
         try std.testing.expectEqualStrings("world", res);
     }
